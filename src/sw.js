@@ -5,8 +5,23 @@
  * in. `importScripts` keeps webpack 1 output usable as-is — it emits plain scripts, not
  * ES modules, so the worker must stay a classic ( non-module ) one.
  *
- * Two globals the bundle expects do not exist in a worker and are stubbed below.
+ * Three globals the bundle expects do not exist in a worker and are stubbed below.
  */
+
+/**
+ * webpack 1's CommonsChunkPlugin runtime opens with `window.webpackJsonp = ...` and the
+ * background chunk then calls the bare global `webpackJsonp(...)`. With no `window`,
+ * common.js throws on its very first statement and the worker never registers.
+ *
+ * Aliasing window to the worker global fixes both halves at once: the assignment lands
+ * on the global object, so the bare call in background.js resolves to it. It has to be
+ * `self` and not `{}` for that second half to work.
+ *
+ * `document` is deliberately NOT stubbed. jQuery's UMD only builds a real instance when
+ * `global.document` exists, and otherwise exports an inert factory; leaving it undefined
+ * is what keeps jQuery from initialising and failing hard here.
+ */
+self.window = self;
 
 /**
  * ga.js is deliberately not imported: MV3 forbids remote script, and it also builds a
@@ -40,4 +55,57 @@ var localStorage = {
     setItem   : function ( key, value ) { this[ key ] = value; },
 };
 
-importScripts( "/bundle/common.js", "/bundle/background.js" );
+importScripts( "/bundle/common.js" );
+
+/**
+ * jQuery's UMD exports an inert factory when there is no document, so `$` ends up a bare
+ * function with none of the static helpers on it. storage.js reaches for two of them
+ * ( $.isEmptyObject and $.extend ) from paths background.js hits on startup, so `$` is
+ * re-published here with just those. They are the only two the background bundles use.
+ *
+ * This has to sit between the two importScripts calls: expose-loader assigns `$` while
+ * common.js is evaluating, so anything installed before that gets clobbered, and
+ * background.js needs it in place by the time it runs.
+ */
+( function () {
+    const jquery = self.$;
+
+    function isPlain( value ) {
+        return value != null && typeof value == "object" && !Array.isArray( value ) &&
+               ( Object.getPrototypeOf( value ) == Object.prototype || Object.getPrototypeOf( value ) == null );
+    }
+
+    // jQuery signature: extend( [deep,] target, ...sources )
+    function extend() {
+        const args = [].slice.call( arguments );
+        let deep = false;
+        typeof args[0] == "boolean" && ( deep = args.shift() );
+        const target = args.shift() || {};
+        args.forEach( function ( source ) {
+            source && Object.keys( source ).forEach( function ( key ) {
+                const value = source[ key ];
+                if ( value === undefined ) return;
+                if ( deep && ( isPlain( value ) || Array.isArray( value ) ) ) {
+                    const seed = Array.isArray( value )
+                               ? ( Array.isArray( target[ key ] ) ? target[ key ] : [] )
+                               : ( isPlain( target[ key ] ) ? target[ key ] : {} );
+                    target[ key ] = extend( true, seed, value );
+                } else target[ key ] = value;
+            });
+        });
+        return target;
+    }
+
+    function $shim() {
+        return jquery.apply( this, arguments );
+    }
+    $shim.isEmptyObject = function ( object ) {
+        for ( const key in object ) return false;
+        return true;
+    };
+    $shim.extend = extend;
+
+    self.$ = self.jQuery = $shim;
+}() );
+
+importScripts( "/bundle/background.js" );

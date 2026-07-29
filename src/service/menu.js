@@ -45,8 +45,17 @@ function onClicked( callback ) {
 
 /**
  * Create all context menu
+ *
+ * Everything is torn down first. Under MV3 the worker is restarted whenever it has been
+ * idle, and background.js rebuilds the menus on every start, so creating straight away
+ * would hit "duplicate id" from the second start onwards. removeAll is async, hence the
+ * callback rather than the two back-to-back calls this used to do.
  */
 function createAll() {
+    browser.contextMenus.removeAll( () => build() );
+}
+
+function build() {
     storage.option.menu.focus &&
         ( context.focus.id = browser.contextMenus.create( context.focus.menu ));
 
@@ -56,7 +65,8 @@ function createAll() {
     storage.option.menu.link &&
         ( context.link.id  = browser.contextMenus.create( context.link.menu ));
 
-    browser.contextMenus.create({ "type": "separator" });
+    // MV3 requires an explicit id on every item, separators included
+    browser.contextMenus.create({ "id": "separator-1", "type": "separator" });
 
     storage.option.menu.list &&
         ( context.list.id     = browser.contextMenus.create( context.list.menu ));
@@ -64,7 +74,7 @@ function createAll() {
     storage.option.menu.unrdist &&
         ( context.unrdist.id  = browser.contextMenus.create( context.unrdist.menu ));
 
-    browser.contextMenus.create({ "type": "separator" });
+    browser.contextMenus.create({ "id": "separator-2", "type": "separator" });
 
     storage.option.menu.whitelist &&
         ( context.whitelist.id  = browser.contextMenus.create( context.whitelist.menu ));
@@ -94,7 +104,6 @@ function create( type ) {
         context[type].id = browser.contextMenus.create( context[type].menu );
     }
     */
-   browser.contextMenus.removeAll();
    createAll();
 }
 
@@ -110,7 +119,6 @@ function remove( type ) {
         context[type].id = undefined;
     }
     */
-    browser.contextMenus.removeAll();
     createAll();
 }
 
