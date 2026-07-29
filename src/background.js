@@ -23,7 +23,7 @@ storage.Read( () => {
     storage.puread = new PureRead( storage.sites );
     if ( local.Firstload() ) {
         local.Version( ver.version );
-        browser.tabs.create({ url: browser.extension.getURL( "options/options.html#firstload?ver=" + ver.version ) });
+        browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#firstload?ver=" + ver.version ) });
     }
     else {
        !local.Count() && storage.GetRemote( "remote", ( result, error ) => {
@@ -39,7 +39,7 @@ storage.Read( () => {
                 storage.Fix( storage.read.sites, storage.version, ver.version, storage.focus.sites );
                 ver.version != storage.version && storage.Write( () => {
                         local.Version( ver.version );
-                        browser.tabs.create({ url: browser.extension.getURL( "options/options.html#update?ver=" + ver.version ) });
+                        browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#update?ver=" + ver.version ) });
                 }, ver.Verify( storage.version, storage.simpread ) );
                 getNewsitesHandler( result );
             });
@@ -47,7 +47,7 @@ storage.Read( () => {
         ver.version == storage.version && ver.patch != storage.patch &&
             storage.Write(()=> {
                 // when x.x.x.yyyy is silent update
-                //browser.tabs.create({ url: browser.extension.getURL( "options/options.html#update?patch=" + ver.patch ) });
+                //browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#update?patch=" + ver.patch ) });
                 //localStorage.setItem( "simpread-patch-update", true );
                 local.Patch( "add", true );
             }, ver.FixSubver( ver.patch, storage.simpread ));
@@ -73,7 +73,7 @@ menu.OnClicked( ( info, tab ) => {
     if ( info.menuItemId == "link" ) {
         info.linkUrl && browser.tabs.create({ url: info.linkUrl + "?simpread_mode=read" });
     } else if ( info.menuItemId == "list" ) {
-        browser.tabs.create({ url: browser.extension.getURL( "options/options.html#later" ) });
+        browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#later" ) });
     } else if ( info.menuItemId == "whitelist" ) {
         browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_whitelist, {url: info.pageUrl } ));
     } else if ( info.menuItemId == "exclusion" ) {
@@ -94,16 +94,45 @@ menu.OnClicked( ( info, tab ) => {
  */
 browser.runtime.onMessage.addListener( function( request, sender, sendResponse ) {
     if ( request.type == msg.MESSAGE_ACTION.CORB ) {
-        $.ajax( request.value.settings )
-            .done( result => {
-                sendResponse({ done: result });
-            })
-            .fail( ( jqXHR, textStatus, errorThrown ) => {
-                sendResponse({ fail: { jqXHR, textStatus, errorThrown }});
-            });
+        ajax( request.value.settings )
+            .then(  result => sendResponse({ done: result }) )
+            .catch( error  => sendResponse({ fail: { jqXHR: undefined, textStatus: "error", errorThrown: String( error ) }}) );
     }
     return true;
 });
+
+/**
+ * jQuery.ajax stand-in for the service worker
+ *
+ * A worker has no XMLHttpRequest, so jQuery cannot run here at all. Callers in
+ * export.js pass jQuery ajax settings objects, so this maps the fields they actually
+ * use ( url, type, headers, contentType, data, dataType ) onto fetch and keeps the
+ * "parse JSON unless told otherwise" behaviour they rely on.
+ *
+ * @param  {object}  jQuery style ajax settings
+ * @return {promise} resolves the parsed body
+ */
+async function ajax( settings = {} ) {
+    const { url, type = "GET", headers = {}, contentType, data, dataType } = settings,
+          init = { method: type.toUpperCase(), headers: { ...headers } };
+
+    contentType && ( init.headers[ "Content-Type" ] = contentType );
+    if ( data != undefined && init.method != "GET" && init.method != "HEAD" ) {
+        init.body = typeof data == "string" ? data : JSON.stringify( data );
+    }
+
+    const response = await fetch( url, init );
+    if ( !response.ok ) throw new Error( `${response.status} ${response.statusText}` );
+
+    const text = await response.text();
+    // jQuery guesses JSON when dataType is unset; only force text when asked for it
+    if ( dataType && dataType.toLowerCase() == "text" ) return text;
+    try {
+        return JSON.parse( text );
+    } catch ( error ) {
+        return text;
+    }
+}
 
 /**
  * Listen runtime message, include: `jianguo`
@@ -197,24 +226,29 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
  */
 browser.runtime.onMessage.addListener( function( request, sender, sendResponse ) {
     if ( request.type == msg.MESSAGE_ACTION.snapshot ) {
-        const { left, top, width, height } = request.value;
-        chrome.tabs.captureVisibleTab( { format: "png" }, base64 => {
-            const image  = new Image();
-            image.src    = base64;
-            image.onload = () => {
-                const canvas  = document.createElement( "canvas" ),
-                      ctx     = canvas.getContext( "2d" ),
-                      dpi     = window.devicePixelRatio,
+        // no Image / <canvas> / devicePixelRatio in a worker: decode through
+        // createImageBitmap, crop on an OffscreenCanvas, and take the dpi from the
+        // content script, which is the only place that can read it
+        const { left, top, width, height, dpi = 1 } = request.value;
+        chrome.tabs.captureVisibleTab( { format: "png" }, async base64 => {
+            try {
+                const blob    = await ( await fetch( base64 ) ).blob(),
+                      bitmap  = await createImageBitmap( blob ),
                       sx      = left   * dpi,
                       sy      = top    * dpi,
                       sWidth  = width  * dpi,
-                      sHeight = height * dpi;
-                canvas.width  = sWidth;
-                canvas.height = sHeight;
-                ctx.drawImage( image, sx, sy, sWidth, height * dpi, 0, 0, sWidth, sHeight );
-                const uri     = canvas.toDataURL( "image/png" );
-                sendResponse({ done: uri });
-          };
+                      sHeight = height * dpi,
+                      canvas  = new OffscreenCanvas( sWidth, sHeight ),
+                      ctx     = canvas.getContext( "2d" );
+                ctx.drawImage( bitmap, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight );
+                const cropped = await canvas.convertToBlob({ type: "image/png" }),
+                      reader  = new FileReader();
+                reader.onloadend = () => sendResponse({ done: reader.result });
+                reader.readAsDataURL( cropped );
+            } catch ( error ) {
+                console.error( "snapshot failed", error );
+                sendResponse({ done: base64 });
+            }
         });
     }
     return true;
@@ -262,19 +296,19 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
             sendResponse( watch.Lock( request.value.url ));
             break;
         case msg.MESSAGE_ACTION.auth:
-            browser.tabs.create({ url: browser.extension.getURL( "options/options.html#labs?auth=" + request.value.name.toLowerCase() ) });
+            browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#labs?auth=" + request.value.name.toLowerCase() ) });
             break;
         case msg.MESSAGE_ACTION.update_site:
             getCurTab({ active: true, url: request.value.url }, tabs => {
                 tabs.length > 0 && ( upTabId = tabs[0].id );
-                browser.tabs.create({ url: browser.extension.getURL( "options/options.html#sites?update=" + encodeURI( JSON.stringify( request.value.site ))) });
+                browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#sites?update=" + encodeURI( JSON.stringify( request.value.site ))) });
             });
             break;
         case msg.MESSAGE_ACTION.save_site:
-            browser.tabs.create({ url: browser.extension.getURL( "options/options.html#sites?pending=" + encodeURI( JSON.stringify( request.value ))) });
+            browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#sites?pending=" + encodeURI( JSON.stringify( request.value ))) });
             break;
         case msg.MESSAGE_ACTION.temp_site:
-            browser.tabs.create({ url: browser.extension.getURL( "options/options.html#sites?temp=" + encodeURI( JSON.stringify( request.value ))) });
+            browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#sites?temp=" + encodeURI( JSON.stringify( request.value ))) });
             break;
         case msg.MESSAGE_ACTION.auth_success:
             getCurTab( { url: request.value.url }, tabs => {
@@ -332,7 +366,7 @@ browser.tabs.onUpdated.addListener( function( tabId, changeInfo, tab ) {
             const url = tab.url.replace( "http://ksria.com/simpread/auth.html?id=", "" ),
                   id  = url.includes( "#" ) || url.includes( "&" ) ? url.substr( 0, url.search( /\S(#|&)/ ) + 1 ) : url ;
             browser.tabs.query( {}, tabs => {
-                const opts = tabs.find( tab => tab.url.includes( browser.extension.getURL( "options/options.html" ) ));
+                const opts = tabs.find( tab => tab.url.includes( browser.runtime.getURL( "options/options.html" ) ));
                 if ( opts ) {
                     browser.tabs.sendMessage( opts.id, msg.Add( msg.MESSAGE_ACTION.redirect_uri, { uri: tab.url, id } ));
                     browser.tabs.remove( tabId );
@@ -340,11 +374,11 @@ browser.tabs.onUpdated.addListener( function( tabId, changeInfo, tab ) {
             });
         } else if ( tab.url.startsWith( "https://simpread.ksria.cn/plugins/install/" )) {
             const url = tab.url.replace( "https://simpread.ksria.cn/plugins/install/", "" );
-            browser.tabs.create({ url: browser.extension.getURL( "options/options.html#plugins?install=" + encodeURIComponent(url) ) });
+            browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#plugins?install=" + encodeURIComponent(url) ) });
             browser.tabs.remove( tabId );
         } else if ( tab.url.startsWith( "https://simpread.ksria.cn/sites/install/" )) {
             const url = tab.url.replace( "https://simpread.ksria.cn/sites/install/", "" );
-            browser.tabs.create({ url: browser.extension.getURL( "options/options.html#sites?install=" + encodeURIComponent(url) ) });
+            browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#sites?install=" + encodeURIComponent(url) ) });
             browser.tabs.remove( tabId );
         } else if ( tab.url == browser.runtime.getURL( "options/options.html#sites?update=success" ) ) {
             browser.tabs.remove( tabId );
@@ -375,7 +409,7 @@ browser.tabs.onRemoved.addListener( tabId => watch.Pull( tabId ));
 /**
  * Listen chrome page, include: `read`
  */
-browser.pageAction.onClicked.addListener( function( tab ) {
+browser.action.onClicked.addListener( function( tab ) {
     browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.browser_click ));
 });
 
@@ -398,17 +432,19 @@ function getCurTab( query, callback ) {
  * @param {int} -1: disable icon;
  */
 function setMenuAndIcon( id, code ) {
+    // MV3 action has no show/hide — the icon is always in the toolbar. enable/disable
+    // plus the icon swap is the closest equivalent for "this page is adaptable".
     let icon = "";
     if ( code == -1 ) {
-        browser.pageAction.hide( id );
+        browser.action.disable( id );
         menu.Update( "tempread" );
     } else {
         icon = "-enable";
-        browser.pageAction.show( id );
+        browser.action.enable( id );
         storage.option.menu.read === true && menu.Create( "read" );
         menu.Update( "read" );
     }
-    browser.pageAction.setIcon({ tabId: id, path: browser.extension.getURL( `assets/images/icon16${icon}.png` ) });
+    browser.action.setIcon({ tabId: id, path: browser.runtime.getURL( `assets/images/icon16${icon}.png` ) });
 }
 
 /**

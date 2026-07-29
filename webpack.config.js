@@ -47,6 +47,7 @@ const webpack = require( 'webpack' ),
         plugins.push(
           new CopyWebpackPlugin([
             { from   : "src/manifest.json" ,              to : '../' },
+            { from   : "src/sw.js" ,                      to : '../' },
             { from   : "src//help_tips.json" ,            to : '../' },
             { from   : "src/website_list.json" ,          to : '../' },
             { from   : "src/ga.js" ,                      to : '../' },

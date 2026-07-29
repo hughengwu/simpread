@@ -5,7 +5,7 @@
   "short_name"      : "SimpRead",
   "description"     : "__MSG_extension_desc__",
   "homepage_url"    : "http://ksria.com/simpread",
-  "author"          : "Kenshin Wang <kenshin@ksria.com>",
+  "author"          : { "email": "kenshin@ksria.com" },
   "icons" : {
     "16"            : "assets/images/icon16.png",
     "48"            : "assets/images/icon48.png",
@@ -15,12 +15,13 @@
     "contextMenus",
     "tabs",
     "storage",
-    "tts",
-    "<all_urls>"
+    "tts"
   ],
-  "optional_permissions": [ "cookies", "https://*.youdao.com/", "downloads" ],
+  "host_permissions": [ "<all_urls>" ],
+  "optional_permissions": [ "cookies", "downloads" ],
+  "optional_host_permissions": [ "https://*.youdao.com/" ],
   "background": {
-    "scripts"       : [ "/ga.js", "/bundle/common.js", "/bundle/background.js" ]
+    "service_worker": "sw.js"
   },
   "content_scripts" : [
     {
@@ -34,19 +35,21 @@
       "run_at"      : "document_end"
     }
   ],
-  "page_action"     : {
+  "action"          : {
     "default_icon"  : {
       "16"          : "assets/images/icon16.png"
     }
   },
   "options_page"    : "options/options.html",
   "web_accessible_resources": [
-    "/assets/images/*",
-    "website_list.json",
-    "options/corb.html"
+    {
+      "resources"   : [ "assets/images/*", "website_list.json", "options/corb.html" ],
+      "matches"     : [ "<all_urls>" ]
+    }
   ],
   "offline_enabled" : true,
-  "update_url"      : "https://clients2.google.com/service/update2/crx",
-  "content_security_policy" : "script-src 'self' 'unsafe-eval' https://ssl.google-analytics.com; object-src 'self'",
-  "manifest_version": 2
+  "content_security_policy" : {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "manifest_version": 3
 }
