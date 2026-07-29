@@ -351,7 +351,17 @@ function pRead() {
     pr.cleanup = storage.read.cleanup == undefined ? true  : storage.read.cleanup;
     pr.pure    = storage.read.pure    == undefined ? false : storage.read.pure;
     pr.AddPlugin( puplugin.Plugin() );
-    pr.Getsites();
+    try {
+        pr.Getsites();
+    } catch ( error ) {
+        // Getsites() ends in Readability(), which throws outright when the top document
+        // holds no article — precisely the case iframe extraction exists for. Letting it
+        // escape kills readMode() before any fallback can run, and silently: the throw
+        // happens inside a watch.Verify callback, so the user sees nothing at all.
+        // pr.current.site keeps its blank defaults, which is what the no-adapter branch
+        // of readMode() already expects.
+        console.warn( "simpread: Getsites failed, continuing without an adapter", error );
+    }
     storage.puread = pr;
     console.log( "current puread object is   ", pr )
 }

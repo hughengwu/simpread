@@ -77,7 +77,10 @@ class Read extends React.Component {
                             .done( () => Render() )
                             .fail( why => {
                                 console.warn( "simpread iframe retry failed:", why );
-                                storage.pr.Readability();
+                                // Readability() throws rather than returning empty
+                                try { storage.pr.Readability(); } catch ( error ) {
+                                    console.warn( "simpread readability fallback failed:", error );
+                                }
                                 Render();
                             });
                     } else {
