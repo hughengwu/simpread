@@ -12,6 +12,7 @@ import * as read      from 'read';
 import * as setting   from 'setting';
 import * as kbd       from 'keyboard';
 import * as highlight from 'highlight';
+import * as iframe    from 'iframe';
 import * as scheme    from 'urlscheme';
 
 import * as util      from 'util';
@@ -187,6 +188,12 @@ function focusMode() {
                 new Notify().Render( "当前为 <a href='http://ksria.com/simpread/docs/#/TXT-阅读器' target='_blank'>TXT 阅读器模式</a>，并不能使用设定功能。" )
                 return;
             }
+            // iframe sourced content has no node in the top document to highlight, and
+            // pr.Include() returns [] because include is empty
+            if ( pr.state == iframe.STATE ) {
+                new Notify().Render( "当前正文来自内嵌页面（iframe），暂不支持聚焦模式。" );
+                return;
+            }
             if ( pr.state == "temp" && pr.dom ) {
                 focus.Render( $(pr.dom), storage.current.bgcolor );
             } else {
@@ -215,22 +222,40 @@ function readMode() {
             new Notify().Render( "配置文件已更新，刷新当前页面后才能生效。", "刷新", ()=>window.location.reload() );
         } else {
             getCurrent( mode.read );
-            if ( storage.current.site.name != "" ) {
-                read.Render();
-            } else if ( pr.state == "temp" && pr.dom ) {
-                read.Render();
-            } else {
+            const manualSelect = () => {
                 new Notify().Render( "<a href='http://ksria.com/simpread/docs/#/词法分析引擎?id=智能感知' target='_blank' >智能感知</a> 正文失败，请移动鼠标，并通过 <a href='http://ksria.com/simpread/docs/#/手动框选' target='_blank' >手动框选</a> 的方式生成正文。" );
                 read.Highlight().done( dom => {
                     const rerender = element => {
                         pr.TempMode( mode.read, dom );
                         read.Render();
                     };
-                    storage.current.highlight ? 
+                    storage.current.highlight ?
                         highlight.Control( dom ).done( newDom => {
                             rerender( newDom );
                         }) : rerender( dom );
                 });
+            };
+            if ( storage.current.site.frame ) {
+                iframe.Enter({ site: storage.current.site })
+                    .done( () => read.Render() )
+                    .fail( why => {
+                        console.warn( "simpread iframe rule failed:", why );
+                        new Notify().Render( 2, "站点规则中的 iframe 未能获取正文，已回退到常规模式。" );
+                        read.Render();
+                    });
+            } else if ( storage.current.site.name != "" ) {
+                read.Render();
+            } else if ( pr.state == "temp" && pr.dom ) {
+                read.Render();
+            } else if ( iframe.Has() ) {
+                iframe.Enter()
+                    .done( () => read.Render() )
+                    .fail( why => {
+                        console.warn( "simpread iframe fallback failed:", why );
+                        manualSelect();
+                    });
+            } else {
+                manualSelect();
             }
         }
     });

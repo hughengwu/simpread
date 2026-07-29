@@ -15,6 +15,7 @@ import * as ss            from 'stylesheet';
 import {browser}          from 'browser';
 import * as msg           from 'message';
 import * as highlight     from 'highlight';
+import * as iframe        from 'iframe';
 import * as run           from 'runtime';
 import * as tips          from 'tips';
 
@@ -61,12 +62,28 @@ class Read extends React.Component {
     verifyContent() {
         if ( $("sr-rd-content").text().length < 100 ) {
             if ( load_count == 0 ) {
-                new Notify().Render({ content: "检测到正文获取异常，是否重新获取？", action: "是的", cancel: "取消", callback: type => {
+                // the state guard is what stops an iframe -> verify -> iframe loop; once
+                // an iframe render still comes up short, load_count is 1 and the chain
+                // falls through to manual highlight exactly as before
+                const useFrame = storage.pr.state != iframe.STATE && iframe.Has();
+                new Notify().Render({
+                    content: useFrame ? "检测到正文可能位于内嵌页面（iframe）中，是否尝试提取？" : "检测到正文获取异常，是否重新获取？",
+                    action: "是的", cancel: "取消", callback: type => {
                     if ( type == "cancel" ) return;
                     load_count++;
                     this.componentWillUnmount();
-                    storage.pr.Readability();
-                    Render();
+                    if ( useFrame ) {
+                        iframe.Enter()
+                            .done( () => Render() )
+                            .fail( why => {
+                                console.warn( "simpread iframe retry failed:", why );
+                                storage.pr.Readability();
+                                Render();
+                            });
+                    } else {
+                        storage.pr.Readability();
+                        Render();
+                    }
                 }});
             } else if ( load_count == 1 ) {
                 this.componentWillUnmount();
@@ -201,6 +218,13 @@ class Read extends React.Component {
                 $( "panel-bg" ).length > 0 && $( "panel-bg" ).trigger( "click" );
                 new Notify().Render({ content: "移动鼠标选择不想显示的内容，可多次选择，使用 ESC 退出。", delay: 5000 });
                 highlight.Multi( dom => {
+                    // iframe sourced content has no persistable rule: name is still
+                    // tempread::host and include is empty, so O() would drop whatever we
+                    // saved, leaving an invisible dead local rule behind
+                    if ( storage.pr.state == iframe.STATE ) {
+                        $( dom ).remove();
+                        return;
+                    }
                     const path = storage.pr.Utils().dom2Xpath( dom ),
                           site = { ...storage.pr.current.site };
                     site.exclude.push( `[[\`${path}\`]]` );
@@ -216,6 +240,22 @@ class Read extends React.Component {
                     });
                     $(dom).remove();
                 });
+                break;
+            case "iframe":
+                if ( !iframe.Has() ) {
+                    new Notify().Render( 2, "当前页面未检测到可提取的内嵌页面（iframe）。" );
+                    break;
+                }
+                $( "panel-bg" ).length > 0 && $( "panel-bg" ).trigger( "click" );
+                iframe.Enter()
+                    .done( () => {
+                        this.componentWillUnmount();
+                        Render();
+                    })
+                    .fail( why => {
+                        console.warn( "simpread iframe action failed:", why );
+                        new Notify().Render( 2, "未能从内嵌页面中提取正文。" );
+                    });
                 break;
             case "highlight":
                 new Notify().Render( `移动鼠标选择高亮区域，以便生成阅读模式，此模式将会在页面刷新后失效，详细说明请看 <a href="http://ksria.com/simpread/docs/#/重新高亮" target="_blank">重新高亮</a>` );

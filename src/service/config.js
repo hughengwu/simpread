@@ -192,6 +192,11 @@ const keyboard = {
             "type" : "highlight",
             "desc" : "重新选择高亮",
         },
+        if: {
+            "kbd"  : "if",
+            "type" : "iframe",
+            "desc" : "从 iframe 提取正文",
+        },
         cl: {
             "kbd"  : "cl",
             "type" : "remove",
@@ -257,6 +262,11 @@ const readItems = {
             "highlight" : {
                 "name" : "重新选项高亮区域",
                 "icon" : ss.IconPath("highlight_icon"),
+                "color": "#03A9F4",
+            },
+            "iframe" : {
+                "name" : "从内嵌页面（iframe）提取正文",
+                "icon" : ss.IconPath("read_icon"),
                 "color": "#03A9F4",
             },
             "remove" : {

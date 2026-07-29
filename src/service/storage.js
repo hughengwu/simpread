@@ -32,6 +32,7 @@ const name = "simpread",
         desc      : "",   // only read mode
         exclude   : [],
         include   : "",
+        frame     : "",   // only read mode; css selector or [[/regexp/]] for the iframe holding the article
         avatar    : [],
         paging    : [],
     },

@@ -15,7 +15,7 @@ import * as dia     from 'dialog';
 const root   = "simpread-option-root",
       rootjq = `.${root}`;
 let site,
-    state    = { name: 0, url: 0, title: 0, desc: 0, include: 0, exclude: 0, avatar:{ name: 0, url: 0 }, paging: { prev:0, next: 0} }; // 0: success -1: faield -2: not empty
+    state    = { name: 0, url: 0, title: 0, desc: 0, include: 0, exclude: 0, frame: 0, avatar:{ name: 0, url: 0 }, paging: { prev:0, next: 0} }; // 0: success -1: faield -2: not empty
 
 /**
  * SiteEditor Rect component
@@ -94,7 +94,10 @@ class SiteEditor extends React.Component {
     }
 
     render() {
-        site = { ...storage.pr.current.site };
+        // during iframe extraction Newsite() replaced pr.current.site with a temp object;
+        // storage.current.site still references the real rule, which is what to edit
+        site = { ...( storage.pr.state == "iframe" && storage.current.site.frame ?
+                      storage.current.site : storage.pr.current.site ) };
         if ( storage.pr.state == "temp" && storage.pr.dom ) {
             site.name   = site.name.replace( "tempread::", "" );
             let include = storage.pr.Utils().dom2Xpath( storage.pr.dom );
@@ -130,6 +133,11 @@ function Render() {
             break;
         case storage.pr.state == "txt":
             new Notify().Render( "当前为 <a href='http://ksria.com/simpread/docs/#/TXT-阅读器' target='_blank'>TXT 阅读器模式</a>，并不能使用设定功能。" )
+            break;
+        // only block the auto detected path: when the rule already declares a frame,
+        // storage.current.site still points at that rule and must stay editable
+        case storage.pr.state == "iframe" && !storage.current.site.frame:
+            new Notify().Render( "当前正文来自内嵌页面（iframe）的自动识别，请先为该站点建立规则并填写「内嵌页面（iframe）」字段。" )
             break;
         default:
             !dia.Popup( rootjq ) && dia.Open( <SiteEditor/>, root );
