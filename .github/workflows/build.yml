@@ -1,0 +1,62 @@
+name: build
+
+# webpack 1 + babel 6 no longer runs on current Node, so the build is pinned to the
+# toolchain's own era. The matrix exists to find which versions still work — keep
+# fail-fast off so one dead version does not hide a working one.
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: webpack (node ${{ matrix.node }})
+    # 22.04 rather than latest: old Node binaries are happier on the older image
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [ '8', '10', '12', '16' ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: versions
+        run: node -v && npm -v
+
+      # no lockfile in the repo, so `npm install` rather than `npm ci`.
+      # --legacy-peer-deps is ignored by npm 5/6 and needed by npm 7+.
+      - name: install
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+
+      # both production builds emit to ./publish and each one cleans it first,
+      # so the chrome artifact has to be uploaded before the ext build starts
+      - name: build chrome (src)
+        run: npm run publish
+
+      - name: chrome output
+        if: always()
+        run: ls -lR publish || true
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: simpread-chrome-node${{ matrix.node }}
+          path: publish
+          if-no-files-found: error
+
+      - name: build ext
+        run: npm run ext_pub
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: simpread-ext-node${{ matrix.node }}
+          path: publish
+          if-no-files-found: error
