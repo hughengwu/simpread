@@ -424,6 +424,32 @@ function detect() {
 }
 
 /**
+ * Plain text summary of an html fragment
+ *
+ * Newsite() hardcodes desc as a [[{…}]] spec, and ReadMode only skips resolving it
+ * when excerpt is non empty ( `t.excerpt ? t.excerpt : S( desc )` ). Resolving it means
+ * `new Function`, which MV3 can not allow — extension_pages CSP may not carry
+ * 'unsafe-eval' — so an empty excerpt takes the whole render down with an EvalError.
+ * Readability's own excerpt is frequently empty, so one is derived here rather than
+ * trusting the payload.
+ *
+ * DOMParser rather than jQuery: the fragment is never attached and no script runs.
+ *
+ * @param  {string} html
+ * @return {string} at most 200 chars ( puread truncates to ~100 itself )
+ */
+function excerptFrom( html ) {
+    let text = "";
+    try {
+        text = new DOMParser().parseFromString( html, "text/html" ).body.textContent || "";
+    } catch ( error ) {
+        return "";
+    }
+    text = text.replace( /\s+/g, " " ).trim();
+    return text.length > 200 ? text.slice( 0, 200 ) : text;
+}
+
+/**
  * Hand a payload to puread
  *
  * @param  {object}  payload from extract()
@@ -443,8 +469,16 @@ function apply( payload, options = {} ) {
     pr.state = STATE;
     pr.dom   = undefined;  // load bearing: several call sites gate on pr.dom being truthy
 
-    pr.Newsite( "read", payload.html, payload.excerpt || "" );
+    const excerpt = String( payload.excerpt || "" ).replace( /\s+/g, " " ).trim() ||
+                    excerptFrom( payload.html );
+
+    pr.Newsite( "read", payload.html, excerpt );
     pr.state = STATE;      // Newsite rebuilds current.site; re-assert in case that changes
+
+    // @see excerptFrom: Newsite's hardcoded desc is a [[{…}]] spec and resolving it
+    // needs eval. Dropping it is safe — S("") just yields "" — and it makes the render
+    // survive even when the html turned out to be text free.
+    pr.current.site.desc = "";
 
     // Newsite rebuilds current.site from scratch, dropping the rule's exclusions
     exclude && ( pr.current.site.exclude = exclude );

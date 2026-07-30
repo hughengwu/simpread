@@ -321,6 +321,13 @@ class Read extends React.Component {
 function Render( callMathjax = true ) {
     loadPlugins( "read_start" );
     callMathjax && mathJaxMode();
+    // puread's Newsite() hardcodes desc as a [[{…}]] spec, which ReadMode resolves with
+    // `new Function` whenever excerpt is empty — TempMode() passes no excerpt at all, so
+    // manual selection lands here. MV3 can not grant 'unsafe-eval' ( extension_pages CSP
+    // forbids it outright ), so that throws EvalError and takes the whole render down.
+    // S("") yields "" instead, which is what the desc would have been anyway.
+    const cur = storage.pr.current && storage.pr.current.site;
+    cur && !cur.excerpt && typeof cur.desc == "string" && cur.desc.startsWith( "[[{" ) && ( cur.desc = "" );
     storage.pr.ReadMode();
     if ( typeof storage.pr.html.include == "string" && storage.pr.html.include.startsWith( "<sr-rd-content-error>" ) ) {
         console.warn( '=== Adapter failed call Readability View ===' )
