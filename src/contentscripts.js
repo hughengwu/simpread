@@ -356,11 +356,21 @@ function pRead() {
     } catch ( error ) {
         // Getsites() ends in Readability(), which throws outright when the top document
         // holds no article — precisely the case iframe extraction exists for. Letting it
-        // escape kills readMode() before any fallback can run, and silently: the throw
-        // happens inside a watch.Verify callback, so the user sees nothing at all.
-        // pr.current.site keeps its blank defaults, which is what the no-adapter branch
-        // of readMode() already expects.
+        // escape kills readMode() before any fallback can run, and silently, since the
+        // throw lands inside a watch.Verify callback.
+        //
+        // The constructor leaves current as a bare {} and Getsites is what fills it in,
+        // so it has to be seeded here too: getCurrent() immediately passes
+        // pr.current.site to storage.Getcur(), which reads .url off it. An empty name is
+        // what routes readMode() to its no-adapter branch, which is where the iframe
+        // fallback lives.
         console.warn( "simpread: Getsites failed, continuing without an adapter", error );
+        pr.current = {
+            mode: mode.read,
+            url : pr.url,
+            site: { url: pr.url, target: "", matching: [], name: "", title: "", desc: "",
+                    exclude: [], include: "", avatar: [], paging: [] },
+        };
     }
     storage.puread = pr;
     console.log( "current puread object is   ", pr )
