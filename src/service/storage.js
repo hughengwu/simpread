@@ -15,8 +15,8 @@ const name = "simpread",
     remote = "http://sr.ksria.cn/website_list_v4.json",
     origins= "http://sr.ksria.cn/website_list_origins.json",
     versions= "http://sr.ksria.cn/versions.json",
-    local  = browser.extension.getURL( "website_list.json" ),
-    help   = browser.extension.getURL( "help_tips.json" ),
+    local  = browser.runtime.getURL( "website_list.json" ),
+    help   = browser.runtime.getURL( "help_tips.json" ),
     mode   = {
         focus     : "focus",
         read      : "read",
@@ -32,6 +32,7 @@ const name = "simpread",
         desc      : "",   // only read mode
         exclude   : [],
         include   : "",
+        frame     : "",   // only read mode; css selector or [[/regexp/]] for the iframe holding the article
         avatar    : [],
         paging    : [],
     },

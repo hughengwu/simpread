@@ -14,7 +14,7 @@ let origin_read_style = "", html_style_bal = "-1";
  * @param {string} icon name
  */
 function iconPath( name ) {
-    return browser.extension.getURL( `assets/images/${name}.png` )
+    return browser.runtime.getURL( `assets/images/${name}.png` )
 }
 
 /**

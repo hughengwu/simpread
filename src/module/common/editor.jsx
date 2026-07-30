@@ -21,6 +21,7 @@ export default class Editor extends React.Component {
     state = {
         err_title   : "",
         err_desc    : "",
+        err_frame   : "",
         err_avatar_name : "",
         err_avatar_url  : "",
         err_paging_prev : "",
@@ -66,6 +67,33 @@ export default class Editor extends React.Component {
         } else {
             this.setState({ err_desc : "当前输入为非法。" });
             this.props.state.desc = -1;
+        }
+    }
+
+    /**
+     * `frame` is validated on its own rather than through verifyHtml(): that helper
+     * returns -1 for a perfectly good selector like "#main iframe", so reusing it here
+     * would reject valid input. Accepts a css selector or the [[/regexp/]] form, and
+     * unlike `include` it may be left empty.
+     */
+    changeFrame( event ) {
+        const frame = event.target.value.trim();
+        let   valid = true;
+        if ( frame != "" ) {
+            if ( frame.startsWith( "[[/" ) && frame.endsWith( "/]]" ) ) {
+                try { new RegExp( frame.replace( /^\[\[\/|\/\]\]$/g, "" )); } catch ( error ) { valid = false; }
+            } else {
+                try { document.querySelector( frame ); } catch ( error ) { valid = false; }
+            }
+        }
+        if ( valid ) {
+            this.setState({ err_frame : "" });
+            this.props.site.frame  = frame;
+            this.props.state.frame = 0;
+            console.log( "this.props.site.frame = ", this.props.site.frame )
+        } else {
+            this.setState({ err_frame : "当前输入为非法，请填写 iframe 的 CSS 选择器或 [[/正则/]]。" });
+            this.props.state.frame = -1;
         }
     }
 
@@ -144,6 +172,16 @@ export default class Editor extends React.Component {
                     </sr-opt-gp>
                     <sr-opt-gp>
                         <Include mode="read" include={ this.props.site.include } changeInclude={ (v,c)=>this.changeInclude(v,c) } />
+                    </sr-opt-gp>
+                    <sr-opt-gp>
+                        <TextField
+                                multi={ false }
+                                placeholder="默认为空。填写后，正文将在该 iframe 内解析，支持 CSS 选择器与 [[/正则/]]。"
+                                floatingtext="内嵌页面（iframe）"
+                                value={ this.props.site.frame || "" }
+                                errortext={ this.state.err_frame }
+                                onChange={ event=>this.changeFrame(event) }
+                        />
                     </sr-opt-gp>
                     <sr-opt-gp>
                         <Exclude exclude={ this.props.site.exclude } changeExclude={ (v,c)=>this.changeExclude(v,c) } />

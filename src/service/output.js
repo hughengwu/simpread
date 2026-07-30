@@ -162,7 +162,8 @@ function action( type, title, desc, content ) {
                     snap.Start().done( result => {
                         snap.End();
                         setTimeout(() => {
-                            browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.snapshot, result ), result => {
+                            // the worker has no devicePixelRatio, so it has to come from here
+                            browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.snapshot, { ...result, dpi: window.devicePixelRatio } ), result => {
                                 exp.Download( result.done, `simpread-${title}.png` );
                             });
                         }, 100 );
