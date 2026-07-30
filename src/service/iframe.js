@@ -100,6 +100,23 @@ function frameURL( el, doc ) {
 }
 
 /**
+ * Is the page laid out right now?
+ *
+ * Read mode hides the original page with `body { display: none }`, which collapses
+ * every frame in it to a 0x0 rect. The manual controlbar entry runs in exactly that
+ * state, so geometry has to be treated as unavailable rather than as "tiny" — otherwise
+ * the size filter rejects every frame on the page and the entry can never do anything.
+ *
+ * @return {boolean}
+ */
+function measurable() {
+    const body = document.body;
+    if ( !body ) return false;
+    const style = window.getComputedStyle( body );
+    return style.display != "none" && style.visibility != "hidden";
+}
+
+/**
  * Phase 1: cheap structural filter over all frames of a document
  *
  * Rejects our own UI, invisible/tiny frames and everything cross origin. That last
@@ -109,9 +126,10 @@ function frameURL( el, doc ) {
  * @param  {document} root document to scan
  * @param  {number}   current nesting depth
  * @param  {array}    accumulator
+ * @param  {boolean}  whether rects mean anything, @see measurable
  * @return {array}    candidate descriptors
  */
-function collect( root, depth = 0, acc = [] ) {
+function collect( root, depth = 0, acc = [], sized = measurable() ) {
     if ( depth >= MAX_DEPTH || acc.length >= MAX_FRAMES ) return acc;
 
     const frames = root.querySelectorAll( "iframe, frame" );
@@ -125,8 +143,10 @@ function collect( root, depth = 0, acc = [] ) {
         if ( el.id == "sr-corb" || $( el ).closest( ".simpread-read-root" ).length > 0 ) continue;
 
         const rect = el.getBoundingClientRect();
-        if ( rect.width < MIN_SIDE || rect.height < MIN_SIDE ) continue;
+        if ( sized && ( rect.width < MIN_SIDE || rect.height < MIN_SIDE )) continue;
 
+        // still meaningful with the page hidden: getComputedStyle reports the element's
+        // own value, not the ancestor that is doing the hiding
         const style = root.defaultView ? root.defaultView.getComputedStyle( el ) : undefined;
         if ( style && ( style.display == "none" || style.visibility == "hidden" )) continue;
 
@@ -140,13 +160,13 @@ function collect( root, depth = 0, acc = [] ) {
             el,                              // present only when sameOrigin === true
             doc,                             // present only when sameOrigin === true
             url       : frameURL( el, doc ),
-            area      : rect.width * rect.height,
+            area      : sized ? rect.width * rect.height : -1,   // -1: unknown
             sameOrigin: true,
             textLen   : 0,
             score     : 0,
         });
 
-        collect( doc, depth + 1, acc );
+        collect( doc, depth + 1, acc, sized );
     }
 
     return acc;
@@ -188,7 +208,9 @@ function rank( item ) {
 
     const semantic = doc.querySelector( "article, main, [itemprop='articleBody'], [role='main']" ) ? 1.35 : 1,
           viewport = Math.max( window.innerWidth * window.innerHeight, 1 ),
-          areaW    = Math.min( 1, item.area / ( 0.15 * viewport )) * 0.5 + 0.5;
+          // area -1 means the page was not laid out when it was collected; no size
+          // signal is better than a fake penalty, so weight it neutrally
+          areaW    = item.area < 0 ? 1 : Math.min( 1, item.area / ( 0.15 * viewport )) * 0.5 + 0.5;
 
     return item.score = item.textLen * ( 1 - linkDensity ) * ( 1 + Math.min( paras, 20 ) / 20 ) * semantic * areaW;
 }
