@@ -1,5 +1,6 @@
 console.log( "=== simpread iframe load ===" )
 
+import Notify          from 'notify';
 import { storage }     from 'storage';
 import { verifyHtml }  from 'util';
 import * as puplugin   from 'puplugin';
@@ -448,15 +449,14 @@ function apply( payload, options = {} ) {
     // Newsite rebuilds current.site from scratch, dropping the rule's exclusions
     exclude && ( pr.current.site.exclude = exclude );
 
-    // ReadMode() runs the title through S(), which throws in Sizzle if the special
-    // syntax test fails. specTest's [ \S]+ matches spaces but not \n / \t / NBSP, and
-    // og:title routinely carries those, so normalize and then verify with the repo's
-    // own predicate instead of trusting the shape.
-    const title = String( payload.title || "" ).replace( /\s+/g, " " ).trim(),
-          spec  = `[[{${ JSON.stringify( title ) }}]]`;
-    pr.current.site.title = title && verifyHtml( spec )[0] == 2 ? spec : "<title>";
-
-    pr.current.site.frame_url = payload.url;
+    // The title can not be injected through site.title. ReadMode() only bypasses S()
+    // for "" and "<title>", and the one S() form that carries a literal — [[{…}]] —
+    // is evaluated with `new Function`, which MV3 forbids: extension_pages CSP can not
+    // declare 'unsafe-eval' at all, so it throws EvalError and kills Render(). Park the
+    // real title on the site object instead; read.jsx applies it after ReadMode().
+    pr.current.site.title      = "<title>";
+    pr.current.site.frame_title= String( payload.title || "" ).replace( /\s+/g, " " ).trim();
+    pr.current.site.frame_url  = payload.url;
 
     return true;
 }

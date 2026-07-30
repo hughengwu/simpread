@@ -327,6 +327,11 @@ function Render( callMathjax = true ) {
         storage.pr.Readability();
         storage.pr.ReadMode();
     } else console.warn( '=== Normal Read mode ===' )
+    // iframe sourced content carries the frame's own title, which can not travel through
+    // site.title: ReadMode() would have to run it through S(), whose literal form uses
+    // `new Function` — unavailable under MV3. @see iframe.Apply()
+    storage.pr.state == iframe.STATE && storage.pr.current.site.frame_title &&
+        ( storage.pr.html.title = storage.pr.current.site.frame_title );
     console.warn( "=== Current PuRead object is ===", storage.pr )
     ReactDOM.render( <Read read={ storage.current } wrapper={ storage.pr.html } />, getReadRoot() );
 }
