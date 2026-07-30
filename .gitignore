@@ -3,6 +3,9 @@ node_modules/**
 publish/**
 .vscode/**
 
+# build artifacts downloaded from CI for local testing
+sr-test/**
+
 # for chrome
 src/bundle/**
 
