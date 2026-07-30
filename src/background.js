@@ -75,29 +75,59 @@ menu.OnClicked( ( info, tab ) => {
     } else if ( info.menuItemId == "list" ) {
         browser.tabs.create({ url: browser.runtime.getURL( "options/options.html#later" ) });
     } else if ( info.menuItemId == "whitelist" ) {
-        browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_whitelist, {url: info.pageUrl } ));
+        sendToTab( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_whitelist, {url: info.pageUrl } ));
     } else if ( info.menuItemId == "exclusion" ) {
-        browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_exclusion, {url: info.pageUrl } ));
+        sendToTab( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_exclusion, {url: info.pageUrl } ));
     } else if ( info.menuItemId == "blacklist" ) {
-        browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_blacklist, {url: info.pageUrl } ));
+        sendToTab( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_blacklist, {url: info.pageUrl } ));
     } else if ( info.menuItemId == "unrdist" ) {
-        browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_unrdist, {url: info.pageUrl } ));
+        sendToTab( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_unrdist, {url: info.pageUrl } ));
     } else if ( info.menuItemId == "lazyload" ) {
-        browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_lazyload, {url: info.pageUrl } ));
+        sendToTab( tab.id, msg.Add( msg.MESSAGE_ACTION.menu_lazyload, {url: info.pageUrl } ));
     } else {
-        if ( !tab.url.startsWith( "chrome://" ) ) browser.tabs.sendMessage( tab.id, msg.Add(info.menuItemId));
+        if ( !tab.url.startsWith( "chrome://" ) ) sendToTab( tab.id, msg.Add(info.menuItemId));
     }
 });
 
 /**
+ * tabs.sendMessage that tolerates a tab with no content script
+ *
+ * MV3 returns a promise when no response callback is given, and it rejects with
+ * "Could not establish connection. Receiving end does not exist." for every tab the
+ * content script does not run in — chrome:// pages, the new tab page, the Web Store,
+ * PDFs, anything under exclude_matches, and any tab loaded before the extension was
+ * installed or reloaded. Nothing is wrong in those cases: the message is simply for a
+ * page that is not listening, and there is no recovery beyond dropping it.
+ *
+ * Under MV2 the same condition only set runtime.lastError, which none of these call
+ * sites read, so it was silent. Left unhandled here it surfaces as an uncaught
+ * rejection in the worker on nearly every tab switch.
+ *
+ * @param {number} tab id
+ * @param {object} message @see msg.Add
+ */
+function sendToTab( id, message ) {
+    if ( !id ) return;
+    try {
+        const sending = browser.tabs.sendMessage( id, message );
+        sending && sending.catch && sending.catch( () => {} );
+    } catch ( error ) {}
+}
+
+/**
  * Listen runtime message, include: `corb`
+ *
+ * `return true` is conditional on purpose. Returning it unconditionally makes every
+ * listener claim an async response for every message, so each message the other
+ * listeners handle leaves this one holding a channel it will never answer — which the
+ * sender reports as "A listener indicated an asynchronous response by returning true,
+ * but the message channel closed before a response was received". Same below.
  */
 browser.runtime.onMessage.addListener( function( request, sender, sendResponse ) {
-    if ( request.type == msg.MESSAGE_ACTION.CORB ) {
-        ajax( request.value.settings )
-            .then(  result => sendResponse({ done: result }) )
-            .catch( error  => sendResponse({ fail: { jqXHR: undefined, textStatus: "error", errorThrown: String( error ) }}) );
-    }
+    if ( request.type != msg.MESSAGE_ACTION.CORB ) return;
+    ajax( request.value.settings )
+        .then(  result => sendResponse({ done: result }) )
+        .catch( error  => sendResponse({ fail: { jqXHR: undefined, textStatus: "error", errorThrown: String( error ) }}) );
     return true;
 });
 
@@ -184,6 +214,7 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
  * Listen runtime message, include: `download`, `base64` && `permission`
  */
 browser.runtime.onMessage.addListener( function( request, sender, sendResponse ) {
+    if ( ![ msg.MESSAGE_ACTION.download, msg.MESSAGE_ACTION.base64, msg.MESSAGE_ACTION.permission ].includes( request.type )) return;
     if ( request.type == msg.MESSAGE_ACTION.download ) {
         const { data, name } = request.value;
         const blob = new Blob([data], {
@@ -225,32 +256,32 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
  * Listen runtime message, include: `snapshot`
  */
 browser.runtime.onMessage.addListener( function( request, sender, sendResponse ) {
-    if ( request.type == msg.MESSAGE_ACTION.snapshot ) {
-        // no Image / <canvas> / devicePixelRatio in a worker: decode through
-        // createImageBitmap, crop on an OffscreenCanvas, and take the dpi from the
-        // content script, which is the only place that can read it
-        const { left, top, width, height, dpi = 1 } = request.value;
-        chrome.tabs.captureVisibleTab( { format: "png" }, async base64 => {
-            try {
-                const blob    = await ( await fetch( base64 ) ).blob(),
-                      bitmap  = await createImageBitmap( blob ),
-                      sx      = left   * dpi,
-                      sy      = top    * dpi,
-                      sWidth  = width  * dpi,
-                      sHeight = height * dpi,
-                      canvas  = new OffscreenCanvas( sWidth, sHeight ),
-                      ctx     = canvas.getContext( "2d" );
-                ctx.drawImage( bitmap, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight );
-                const cropped = await canvas.convertToBlob({ type: "image/png" }),
-                      reader  = new FileReader();
-                reader.onloadend = () => sendResponse({ done: reader.result });
-                reader.readAsDataURL( cropped );
-            } catch ( error ) {
-                console.error( "snapshot failed", error );
-                sendResponse({ done: base64 });
-            }
-        });
-    }
+    if ( request.type != msg.MESSAGE_ACTION.snapshot ) return;
+
+    // no Image / <canvas> / devicePixelRatio in a worker: decode through
+    // createImageBitmap, crop on an OffscreenCanvas, and take the dpi from the
+    // content script, which is the only place that can read it
+    const { left, top, width, height, dpi = 1 } = request.value;
+    chrome.tabs.captureVisibleTab( { format: "png" }, async base64 => {
+        try {
+            const blob    = await ( await fetch( base64 ) ).blob(),
+                  bitmap  = await createImageBitmap( blob ),
+                  sx      = left   * dpi,
+                  sy      = top    * dpi,
+                  sWidth  = width  * dpi,
+                  sHeight = height * dpi,
+                  canvas  = new OffscreenCanvas( sWidth, sHeight ),
+                  ctx     = canvas.getContext( "2d" );
+            ctx.drawImage( bitmap, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight );
+            const cropped = await canvas.convertToBlob({ type: "image/png" }),
+                  reader  = new FileReader();
+            reader.onloadend = () => sendResponse({ done: reader.result });
+            reader.readAsDataURL( cropped );
+        } catch ( error ) {
+            console.error( "snapshot failed", error );
+            sendResponse({ done: base64 });
+        }
+    });
     return true;
 });
 
@@ -262,7 +293,7 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
     switch ( request.type ) {
         case msg.MESSAGE_ACTION.shortcuts:
             getCurTab( { url: request.value.url }, tabs => {
-                browser.tabs.sendMessage( tabs[0].id, msg.Add( msg.MESSAGE_ACTION.shortcuts ));
+                sendToTab( tabs[0].id, msg.Add( msg.MESSAGE_ACTION.shortcuts ));
             });
             break;
         case msg.MESSAGE_ACTION.browser_action:
@@ -315,7 +346,7 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
                 if ( tabs && tabs.length > 0 ) {
                     browser.tabs.remove( tabs[0].id );
                     getCurTab( { "active": true }, tabs => {
-                        tabs.forEach( tab => browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.export, {type: request.value.name.toLowerCase()} )) );
+                        tabs.forEach( tab => sendToTab( tab.id, msg.Add( msg.MESSAGE_ACTION.export, {type: request.value.name.toLowerCase()} )) );
                     });
                 }
             });
@@ -346,7 +377,7 @@ browser.tabs.onActivated.addListener( function( active ) {
         if ( tabs && tabs.length > 0 && tabs[0].status == "complete" ) {
             console.log( "background tabs Listener:active", active );
             if ( tabs && tabs.length > 0 && !tabs[0].url.startsWith( "chrome://" ) ) {
-                browser.tabs.sendMessage( tabs[0].id, msg.Add( msg.MESSAGE_ACTION.tab_selected, { is_update: false } ));
+                sendToTab( tabs[0].id, msg.Add( msg.MESSAGE_ACTION.tab_selected, { is_update: false } ));
             } else {
                 setMenuAndIcon( tabs[0].id, -1 );
             }
@@ -368,7 +399,7 @@ browser.tabs.onUpdated.addListener( function( tabId, changeInfo, tab ) {
             browser.tabs.query( {}, tabs => {
                 const opts = tabs.find( tab => tab.url.includes( browser.runtime.getURL( "options/options.html" ) ));
                 if ( opts ) {
-                    browser.tabs.sendMessage( opts.id, msg.Add( msg.MESSAGE_ACTION.redirect_uri, { uri: tab.url, id } ));
+                    sendToTab( opts.id, msg.Add( msg.MESSAGE_ACTION.redirect_uri, { uri: tab.url, id } ));
                     browser.tabs.remove( tabId );
                 }
             });
@@ -389,12 +420,12 @@ browser.tabs.onUpdated.addListener( function( tabId, changeInfo, tab ) {
             browser.tabs.remove( tabId );
         } else if ( tab.url == browser.runtime.getURL( "options/options.html#sites?update=pending" ) ) {
             browser.tabs.remove( tabId );
-            upTabId > 0 && browser.tabs.sendMessage( upTabId, msg.Add( msg.MESSAGE_ACTION.pending_site ));
+            upTabId > 0 && sendToTab( upTabId, msg.Add( msg.MESSAGE_ACTION.pending_site ));
             upTabId == -1;
         }
 
         if ( !tab.url.startsWith( "chrome://" ) ) {
-            browser.tabs.sendMessage( tabId, msg.Add( msg.MESSAGE_ACTION.tab_selected, { is_update: true } ));
+            sendToTab( tabId, msg.Add( msg.MESSAGE_ACTION.tab_selected, { is_update: true } ));
         } else {
             setMenuAndIcon( tab.id, -1 );
         }
@@ -410,7 +441,7 @@ browser.tabs.onRemoved.addListener( tabId => watch.Pull( tabId ));
  * Listen chrome page, include: `read`
  */
 browser.action.onClicked.addListener( function( tab ) {
-    browser.tabs.sendMessage( tab.id, msg.Add( msg.MESSAGE_ACTION.browser_click ));
+    sendToTab( tab.id, msg.Add( msg.MESSAGE_ACTION.browser_click ));
 });
 
 /**

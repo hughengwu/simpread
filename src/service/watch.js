@@ -17,7 +17,14 @@ const watcher = {
  * @param {string} value watcher object state
  */
 function message( type, value ) {
-    browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.updated, { type, value } ));
+    // This is a broadcast — nothing has to be listening. Under MV3 that means a
+    // rejected promise ( "Receiving end does not exist" ) whenever no options page or
+    // content script is open, which the worker then reports as an uncaught rejection.
+    // MV2 only set runtime.lastError here, which no caller read.
+    try {
+        const sending = browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.updated, { type, value } ));
+        sending && sending.catch && sending.catch( () => {} );
+    } catch ( error ) {}
 }
 
 /**
