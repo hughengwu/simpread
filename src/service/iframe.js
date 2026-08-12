@@ -592,6 +592,32 @@ function extractLocal( item, site ) {
 }
 
 /**
+ * Normalize a site rule's `include` into something the frame agent can apply
+ *
+ * The agent only does querySelectorAll and document.evaluate, so the puread tag
+ * notation stored in website_list.json ( "<div class='post'>" ) has to be converted to
+ * a real selector on this side — the same conversion resolveInclude() does for same
+ * origin frames. The [[`xpath`]] form travels as-is; the other three special forms are
+ * code bound to a document and are dropped here so the agent falls through to shipping
+ * its whole document for Readability.
+ *
+ * @param  {string} raw include value
+ * @return {string} selector or [[`xpath`]], "" when unusable
+ */
+function remoteInclude( include ) {
+    if ( include == "" ) return "";
+
+    if ( verifyHtml( include )[0] == 2 ) {
+        if ( include.startsWith( "[[`" ) && include.endsWith( "`]]" )) return include;
+        console.warn( "simpread iframe: unsupported include form in frame mode", include );
+        new Notify().Render( 2, "iframe 模式下的正文选取仅支持 CSS 选择器与 [[`xpath`]]，已改用自动识别。" );
+        return "";
+    }
+
+    return tag2Selector( include );
+}
+
+/**
  * Extract from a cross origin frame, over postMessage
  *
  * The frame agent resolves a site rule's `include` on its own side ( it is the only
@@ -603,7 +629,7 @@ function extractLocal( item, site ) {
 function extractRemote( item, site ) {
     const dtd     = $.Deferred(),
           token   = item.id,
-          include = site && site.include ? site.include.trim() : "";
+          include = remoteInclude( site && site.include ? site.include.trim() : "" );
 
     let win;
     try {
