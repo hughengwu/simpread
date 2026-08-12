@@ -3,6 +3,7 @@ console.log( "=== simpread focus load ===" );
 var storage  = require( "storage" ).storage,
     util     = require( "util" ),
     highlight= require( "highlight"  ),
+    selector = require( "selector" ),
     fcontrol = require( "controlbar" ),
     tooltip  = require( "tooltip" ),
     waves    = require( "waves" ),
@@ -197,7 +198,8 @@ function includeStyle( $target, style, cls, type ) {
  * @param {string} include: 'add' 'delete'
  */
 function excludeStyle( $target, type ) {
-    const tags = storage.pr.Exclude( $target );
+    // remove:false — focus hides and unhides, it does not delete. @see selector.js
+    const tags = selector.Excludes( storage.pr, $target, false );
     if ( type == "delete" )   $target.find( tags ).hide();
     else if ( type == "add" ) $target.find( tags ).show();
 }

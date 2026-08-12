@@ -13,6 +13,7 @@ import * as setting   from 'setting';
 import * as kbd       from 'keyboard';
 import * as highlight from 'highlight';
 import * as iframe    from 'iframe';
+import * as selector  from 'selector';
 import * as scheme    from 'urlscheme';
 
 import * as util      from 'util';
@@ -201,7 +202,9 @@ function focusMode() {
             if ( pr.state == "temp" && pr.dom ) {
                 focus.Render( $(pr.dom), storage.current.bgcolor );
             } else {
-                focus.GetFocus( pr.Include(), storage.current.site.include ).done( result => {
+                // via selector: an include stored as [[{…}]] is code, and pr.Include()
+                // swallows the resulting EvalError into an empty result. @see selector.js
+                focus.GetFocus( selector.Include( pr ), storage.current.site.include ).done( result => {
                     storage.pr.state == "none" && pr.TempMode( mode.focus, result[0] );
                     focus.Render( result, storage.current.bgcolor );
                 }).fail( () => {
