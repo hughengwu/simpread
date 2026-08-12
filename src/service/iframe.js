@@ -20,20 +20,26 @@ import * as puplugin   from 'puplugin';
  *
  *     e.include = ( "" == t.include && "" != t.html ) ? t.html : S( i, "html" )
  *
+ * Two kinds of frame, one pipeline. A same origin frame is read directly. A cross origin
+ * one is reached through the agent in src/framescript.js over postMessage, addressed by
+ * the token stamped on its <iframe> element. Either way what travels is a *serialized*
+ * payload ( { html, title, excerpt, url } ), never a DOM node — which is both what can
+ * cross an origin boundary and what Newsite() wants.
+ *
+ * Three entry points, in increasing order of how much the user had to do:
+ *
+ *   enter()  automatic — score every frame, take the winner ( contentscripts.js )
+ *   enter({ site })  a site rule named the frame and, optionally, the include
+ *   pick()   the user points at the content themselves ( highlight.js )
+ *
  * Limitations ( see docs ):
- *   - cross origin frames are NOT supported ( contentDocument is null, frame skipped )
- *   - detection is a single synchronous snapshot; lazily mounted frames are missed
- *   - sandboxed frames without allow-same-origin get an opaque origin and are skipped
+ *   - automatic detection scores an install time snapshot, refreshed on entry ( warm );
+ *     a frame that mounts later still needs pick()
+ *   - frames sandboxed without allow-scripts never get an agent and stay invisible
  *   - nested frames are walked to MAX_DEPTH only
  *   - in frame mode `include` supports plain CSS selectors and [[`xpath`]] only
  *   - `exclude` of the [[`xpath`]] form does not work ( Exclude() resolves it against
  *     the top document — pre existing engine behaviour )
- *
- * Cross origin readiness: every entry point returns a $.Deferred and extract() resolves
- * a *serialized* payload ( { html, title, excerpt, url } ), never a DOM node — exactly
- * what can later cross an origin boundary via postMessage and exactly what Newsite()
- * wants. Candidate descriptors carry a stable `id` ( stamped on the top document's
- * <iframe> element ) so a future all_frames content script can be addressed by it.
  */
 
 const STATE     = "iframe",        // storage.pr.state value for iframe sourced content
@@ -47,7 +53,17 @@ const STATE     = "iframe",        // storage.pr.state value for iframe sourced 
       MIN_TEXT  = 400,             // chars; aligns with Readability DEFAULT_CHAR_THRESHOLD
       MIN_SCORE = 3000,            // ~400 chars of pure prose in a decently sized frame
       FETCH_WAIT= 8000,            // ms to wait for a frame's content before giving up
-      PROBE_AGAIN= 1500;           // ms; second probe round, catches late mounted frames
+      PROBE_AGAIN= 1500,           // ms; second probe round, catches late mounted frames
+      PROBE_WAIT= 300,             // ms; how long a re-probe waits for agents to answer
+
+      // Same class the top document's picker uses ( @see src/service/highlight.js ). The
+      // rule itself has to be duplicated because a frame document does not inherit the
+      // top page's stylesheets, and highlight.js can not export it here without turning
+      // the highlight -> iframe import into a cycle.
+      PICK_CLASS= "simpread-highlight-selector",
+      PICK_CSS  = `.${ "simpread-highlight-selector" }{background-color:#fafafa!important;` +
+                  `outline:3px dashed #1976d2!important;opacity:.8!important;` +
+                  `cursor:pointer!important;transition:opacity .5s ease!important;}`;
 
 let frame_seed = 0;
 
@@ -63,6 +79,12 @@ const reported = new Map();
  * Deferreds waiting on a `content` reply, keyed by token
  */
 const pending  = new Map();
+
+/**
+ * Cross origin frames currently running a manual picker, keyed by token
+ * @see pick
+ */
+const picking  = new Map();
 
 /**
  * Element.matches with legacy fallbacks
@@ -124,24 +146,50 @@ function tokenFor( el ) {
  * Same origin frames are read directly and are deliberately not probed. Runs on
  * install and again shortly after, then on every manual invocation, so the registry is
  * warm by the time a synchronous has() consults it.
+ *
+ * @return {number} how many probes went out, so a caller knows whether waiting for
+ *                  replies can possibly change anything
  */
 function probeAll( root = document, depth = 0 ) {
-    if ( depth >= MAX_DEPTH ) return;
+    if ( depth >= MAX_DEPTH ) return 0;
 
     const frames = root.querySelectorAll( "iframe, frame" );
+    let sent = 0;
+
     for ( let i = 0; i < frames.length; i++ ) {
         const el  = frames[i],
               doc = frameDocument( el );
         if ( doc ) {
             // reachable directly; recurse for any cross origin grandchildren
-            probeAll( doc, depth + 1 );
+            sent += probeAll( doc, depth + 1 );
             continue;
         }
         try {
-            el.contentWindow && el.contentWindow.postMessage(
-                { ns: NS, type: "probe", token: tokenFor( el ) }, "*" );
+            if ( el.contentWindow ) {
+                el.contentWindow.postMessage( { ns: NS, type: "probe", token: tokenFor( el ) }, "*" );
+                sent++;
+            }
         } catch ( error ) {}
     }
+
+    return sent;
+}
+
+/**
+ * Re-probe and give the agents a moment to answer
+ *
+ * The registry is a snapshot: install() probes at document_end and once more 1.5s later.
+ * A frame that was still loading then reports an empty document, scores 0 and stays that
+ * way forever — the frame looks present to has() but is never selectable, which surfaces
+ * as "the fallback triggers and then says it found nothing". Refreshing before anything
+ * is scored is what makes a slow frame usable.
+ *
+ * @return {promise} resolve()
+ */
+function warm() {
+    const dtd = $.Deferred();
+    probeAll() > 0 ? setTimeout( () => dtd.resolve(), PROBE_WAIT ) : dtd.resolve();
+    return dtd;
 }
 
 /**
@@ -153,6 +201,21 @@ function onMessage( event ) {
 
     if ( data.type == "metrics" ) {
         reported.set( data.token, data );
+        return;
+    }
+
+    // manual picking, @see pick
+    if ( data.type == "pickenter" || data.type == "picked" || data.type == "pickcancel" ) {
+        const entry = picking.get( data.token );
+        if ( !entry ) return;
+        if ( data.type == "pickenter" ) {
+            entry.onEnter && entry.onEnter();
+            return;
+        }
+        picking.delete( data.token );
+        data.type == "pickcancel" ?
+            entry.onCancel && entry.onCancel() :
+            entry.onPick( remotePayload( data, entry.item ));
         return;
     }
 
@@ -801,6 +864,241 @@ function detect() {
 }
 
 /**
+ * Frames a user could plausibly point at during manual selection
+ *
+ * Deliberately not collect(): that one answers "which frame is worth reading", so it
+ * scores, drops anything below MIN_SIDE and requires a cross origin frame to have already
+ * answered a probe. Here the user does the judging, so the only frames worth removing are
+ * our own UI and ones that are not rendered at all. A cross origin frame with no agent
+ * simply never reports a pick, which is the correct outcome rather than an omission.
+ *
+ * @param  {document} root document to scan
+ * @param  {number}   current nesting depth
+ * @param  {array}    accumulator
+ * @return {array}    { id, el, doc, url, sameOrigin }
+ */
+function pickables( root = document, depth = 0, acc = [] ) {
+    if ( depth >= MAX_DEPTH || acc.length >= MAX_FRAMES ) return acc;
+
+    const frames = root.querySelectorAll( "iframe, frame" );
+
+    for ( let i = 0; i < frames.length; i++ ) {
+        if ( acc.length >= MAX_FRAMES ) break;
+
+        const el = frames[i];
+        if ( el.id == "sr-corb" || $( el ).closest( ".simpread-read-root" ).length > 0 ) continue;
+
+        // no size test: the controlbar entry runs while read mode still has the page
+        // hidden, which collapses every frame to 0x0. @see measurable
+        const style = root.defaultView ? root.defaultView.getComputedStyle( el ) : undefined;
+        if ( style && ( style.display == "none" || style.visibility == "hidden" )) continue;
+
+        const doc = frameDocument( el );
+        acc.push({ id: tokenFor( el ), el, doc, url: frameURL( el, doc ), sameOrigin: !!doc });
+
+        doc && pickables( doc, depth + 1, acc );
+    }
+
+    return acc;
+}
+
+/**
+ * Arm the manual picker inside every frame on the page
+ *
+ * The top document's picker ( highlight.js ) can never see into a frame: mouse events
+ * inside one are delivered to the frame's own document and stop there, so hovering frame
+ * content produces no highlight, no `cursor: pointer` and no clickable target. The only
+ * way to select frame content is to run a picker on the far side of the boundary.
+ *
+ * What comes back is a finished payload rather than an element, because an element from
+ * another document is useless to the rest of the pipeline: puread's TempMode() and the
+ * +/- controlbar both resolve against the top document, and innerHTML carried across a
+ * boundary loses its base url. absolutize() and — cross origin — sanitize() are applied
+ * here, so the payload is the same shape extract() produces and apply() accepts.
+ *
+ * @param  {function} onPick( payload ), fires at most once
+ * @param  {function} onEnter, the pointer moved into some frame; used by the top picker
+ *                    to drop its own now-stale highlight
+ * @param  {function} onCancel, Esc was pressed inside a frame — that keydown goes to the
+ *                    frame's document and never reaches the top one, so it is relayed
+ * @return {function} teardown, safe to call after a pick
+ */
+function pick( onPick, onEnter, onCancel ) {
+    const stops = [];
+    let done = false;
+
+    const stop   = () => stops.forEach( fn => {
+              try { fn(); } catch ( error ) {}
+          }),
+          hit    = payload => {
+              if ( done ) return;
+              done = true;
+              stop();
+              onPick( payload );
+          },
+          cancel = () => {
+              if ( done ) return;
+              done = true;
+              stop();
+              onCancel && onCancel();
+          };
+
+    pickables().forEach( item => {
+        stops.push( item.sameOrigin ? pickLocal( item, hit, onEnter, cancel ) :
+                                      pickRemote( item, hit, onEnter, cancel ));
+    });
+
+    return stop;
+}
+
+/**
+ * Run the picker in a frame we can reach directly
+ *
+ * Listeners are capturing so the frame's own handlers can not swallow the click, and the
+ * click is cancelled: while picking, a click means "this element", never "follow this
+ * link".
+ *
+ * @param  {object}   pickable descriptor
+ * @param  {function} onPick( payload )
+ * @param  {function} onEnter
+ * @param  {function} onCancel
+ * @return {function} teardown
+ */
+function pickLocal( item, onPick, onEnter, onCancel ) {
+    const doc   = item.doc,
+          style = doc.createElement( "style" );
+
+    let prev, entered = 0;
+
+    style.setAttribute( "data-simpread-pick", "1" );
+    style.textContent = PICK_CSS;
+    ( doc.head || doc.documentElement ).appendChild( style );
+
+    const mark = el => el && el.classList && el.classList.add( PICK_CLASS ),
+          wipe = el => el && el.classList && el.classList.remove( PICK_CLASS ),
+
+          move = event => {
+              const now = Date.now();
+              // throttled: the top picker only needs to hear that the pointer left it
+              if ( now - entered > 400 ) {
+                  entered = now;
+                  onEnter && onEnter();
+              }
+              wipe( prev );
+              prev = event.target;
+              mark( prev );
+          },
+
+          click = event => {
+              event.preventDefault();
+              event.stopPropagation();
+              wipe( event.target );
+              teardown();
+              onPick( localPayload( item, event.target ));
+          },
+
+          escape = event => {
+              if ( event.keyCode != 27 ) return;
+              event.preventDefault();
+              onCancel && onCancel();
+          },
+
+          teardown = () => {
+              doc.removeEventListener( "mousemove", move, true );
+              doc.removeEventListener( "click", click, true );
+              doc.removeEventListener( "keydown", escape, true );
+              wipe( prev );
+              prev = undefined;
+              style.parentNode && style.parentNode.removeChild( style );
+          };
+
+    doc.addEventListener( "mousemove", move, true );
+    doc.addEventListener( "click", click, true );
+    doc.addEventListener( "keydown", escape, true );
+
+    return teardown;
+}
+
+/**
+ * Run the picker in a frame only its agent can reach, over postMessage
+ *
+ * @param  {object}   pickable descriptor
+ * @param  {function} onPick( payload )
+ * @param  {function} onEnter
+ * @param  {function} onCancel
+ * @return {function} teardown
+ */
+function pickRemote( item, onPick, onEnter, onCancel ) {
+    let win;
+    try {
+        win = item.el && item.el.contentWindow;
+    } catch ( error ) {}
+    if ( !win ) return () => {};
+
+    picking.set( item.id, { item, onPick, onEnter, onCancel });
+    try {
+        win.postMessage({ ns: NS, type: "pick", token: item.id }, "*" );
+    } catch ( error ) {}
+
+    return () => {
+        picking.delete( item.id );
+        try {
+            win.postMessage({ ns: NS, type: "pickoff", token: item.id }, "*" );
+        } catch ( error ) {}
+    };
+}
+
+/**
+ * Payload for an element picked in a same origin frame
+ *
+ * innerHTML rather than outerHTML to match what a rule's `include` yields — the picked
+ * element is the container, its contents are the article.
+ *
+ * @param  {object}  pickable descriptor
+ * @param  {element} picked element
+ * @return {object}  payload
+ */
+function localPayload( item, el ) {
+    const doc = item.doc;
+    return {
+        html   : absolutize( el && el.innerHTML ? el.innerHTML : "",
+                             doc.baseURI || doc.URL || item.url ),
+        title  : doc.title || "",
+        excerpt: "",
+        url    : item.url,
+    };
+}
+
+/**
+ * Payload for an element picked in a cross origin frame
+ *
+ * Same trust rules as extractRemote(): the markup comes from a less trusted origin than
+ * the page it is about to be injected into, so it is stripped before anything reads it.
+ *
+ * @param  {object} `picked` message
+ * @param  {object} pickable descriptor
+ * @return {object} payload
+ */
+function remotePayload( data, item ) {
+    const url = data.url || item.url;
+
+    let doc;
+    try {
+        doc = new DOMParser().parseFromString( data.html || "", "text/html" );
+    } catch ( error ) {}
+    if ( !doc || !doc.body ) return { html: "", title: data.title || "", excerpt: "", url };
+
+    sanitize( doc );
+
+    return {
+        html   : absolutize( doc.body.innerHTML, url ),
+        title  : data.title || "",
+        excerpt: "",
+        url,
+    };
+}
+
+/**
  * Plain text summary of an html fragment
  *
  * Newsite() hardcodes desc as a [[{…}]] spec, and ReadMode only skips resolving it
@@ -886,19 +1184,6 @@ function enter( options = {} ) {
           site = options.site,
           rule = site && site.frame ? site.frame : "";
 
-    let target;
-
-    if ( rule ) {
-        // a rule that stopped matching should say so, not silently auto detect
-        const matched = candidates().filter( item => isFrame( item, rule ));
-        if ( matched.length == 0 ) {
-            dtd.reject( `no frame matched rule: ${rule}` );
-            return dtd;
-        }
-        matched.forEach( item => !item.score && rank( item ));
-        target = matched.sort( ( a, b ) => b.score - a.score )[0];
-    }
-
     const run = item => {
         extract( item, rule ? site : undefined )
             .done( payload => {
@@ -909,7 +1194,23 @@ function enter( options = {} ) {
             .fail( why => dtd.reject( why ));
     };
 
-    target ? run( target ) : detect().done( run ).fail( why => dtd.reject( why ));
+    // nothing may be scored off the install time snapshot, @see warm
+    warm().done( () => {
+        let target;
+
+        if ( rule ) {
+            // a rule that stopped matching should say so, not silently auto detect
+            const matched = candidates().filter( item => isFrame( item, rule ));
+            if ( matched.length == 0 ) {
+                dtd.reject( `no frame matched rule: ${rule}` );
+                return;
+            }
+            matched.forEach( item => !item.score && rank( item ));
+            target = matched.sort( ( a, b ) => b.score - a.score )[0];
+        }
+
+        target ? run( target ) : detect().done( run ).fail( why => dtd.reject( why ));
+    });
 
     return dtd;
 }
@@ -920,6 +1221,7 @@ export {
     has            as Has,
     candidates     as Candidates,
     detect         as Detect,
+    pick           as Pick,
     extract        as Extract,
     apply          as Apply,
     enter          as Enter,
