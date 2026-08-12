@@ -16,6 +16,7 @@ import {browser}          from 'browser';
 import * as msg           from 'message';
 import * as highlight     from 'highlight';
 import * as iframe        from 'iframe';
+import * as selector      from 'selector';
 import * as run           from 'runtime';
 import * as tips          from 'tips';
 
@@ -321,18 +322,15 @@ class Read extends React.Component {
 function Render( callMathjax = true ) {
     loadPlugins( "read_start" );
     callMathjax && mathJaxMode();
-    // puread's Newsite() hardcodes desc as a [[{…}]] spec, which ReadMode resolves with
-    // `new Function` whenever excerpt is empty — TempMode() passes no excerpt at all, so
-    // manual selection lands here. MV3 can not grant 'unsafe-eval' ( extension_pages CSP
-    // forbids it outright ), so that throws EvalError and takes the whole render down.
-    // S("") yields "" instead, which is what the desc would have been anyway.
-    const cur = storage.pr.current && storage.pr.current.site;
-    cur && !cur.excerpt && typeof cur.desc == "string" && cur.desc.startsWith( "[[{" ) && ( cur.desc = "" );
-    storage.pr.ReadMode();
+    // Never storage.pr.ReadMode() directly: a third of the shipped rules — and the desc
+    // Newsite() hardcodes for every temp/Readability render — carry [[{…}]] expressions
+    // that ReadMode resolves with `new Function`, which MV3 forbids outright. selector
+    // resolves them without eval and leaves the rest of ReadMode alone. @see selector.js
+    selector.ReadMode( storage.pr );
     if ( typeof storage.pr.html.include == "string" && storage.pr.html.include.startsWith( "<sr-rd-content-error>" ) ) {
         console.warn( '=== Adapter failed call Readability View ===' )
         storage.pr.Readability();
-        storage.pr.ReadMode();
+        selector.ReadMode( storage.pr );
     } else console.warn( '=== Normal Read mode ===' )
     // iframe sourced content carries the frame's own title, which can not travel through
     // site.title: ReadMode() would have to run it through S(), whose literal form uses
@@ -446,7 +444,9 @@ function getReadRoot() {
  * @param {array}  hidden html
  */
 function excludes( $target, exclude ) {
-    const tags = storage.pr.Exclude( $target );
+    // via selector: the [[[…]]] exclude entries are code, and puread's Exclude() rethrows
+    // the EvalError out of its own finally block. @see selector.js
+    const tags = selector.Excludes( storage.pr, $target );
     $target.find( tags ).remove();
 }
 
