@@ -20,6 +20,10 @@
  *   down  fetch    { token, include }        include optional, from a site rule
  *   up    content  { token, url, title, html, truncated }
  *   up    error    { token, why }
+ *   down  pick     { token }                 arm the manual picker in this frame
+ *   down  pickoff  { token }                 disarm it, some other frame won
+ *   up    pickenter{ token }                 pointer moved into this frame, throttled
+ *   up    picked   { token, url, title, html }
  *
  * The top frame addresses a frame by posting to the element's contentWindow, so it can
  * probe a grandchild directly as long as some ancestor chain is same origin enough for
@@ -40,7 +44,17 @@
     var NS       = "simpread-frame",
         MAX_HTML = 2 * 1024 * 1024,   // cap what a single frame may ship upward
         PARA_MIN = 40,                // chars; mirrors iframe.js rank()
-        SEMANTIC = "article, main, [itemprop='articleBody'], [role='main']";
+        SEMANTIC = "article, main, [itemprop='articleBody'], [role='main']",
+
+        // mirrors PICK_CSS in src/service/iframe.js; this document does not inherit the
+        // top page's stylesheets, so the rule has to come with the picker
+        PICK_CLASS = "simpread-highlight-selector",
+        PICK_CSS   = ".simpread-highlight-selector{background-color:#fafafa!important;" +
+                     "outline:3px dashed #1976d2!important;opacity:.8!important;" +
+                     "cursor:pointer!important;transition:opacity .5s ease!important;}",
+
+        // teardown for the currently armed picker, null when not picking
+        pickStop = null;
 
     /**
      * Content signals for this document
@@ -121,14 +135,99 @@
         } catch ( error ) {}
     }
 
+    function mark( el, on ) {
+        if ( !el || !el.classList ) return;
+        on ? el.classList.add( PICK_CLASS ) : el.classList.remove( PICK_CLASS );
+    }
+
+    /**
+     * Arm the manual picker in this frame
+     *
+     * The top document can not do this itself: mouse events over a frame are delivered
+     * to the frame's own document and never surface upstairs, so without an agent side
+     * picker frame content simply can not be selected. @see pick() in iframe.js
+     *
+     * Capturing listeners so the page's own handlers can not swallow the click, and the
+     * click is cancelled — while picking, a click means "this element", not "follow this
+     * link".
+     */
+    function pickOn( token ) {
+        pickOff();
+
+        var style   = document.createElement( "style" ),
+            prev    = null,
+            entered = 0;
+
+        style.textContent = PICK_CSS;
+        ( document.head || document.documentElement ).appendChild( style );
+
+        function move( event ) {
+            var now = Date.now();
+            // throttled: the top picker only needs to know the pointer has left it
+            if ( now - entered > 400 ) {
+                entered = now;
+                reply({ ns: NS, type: "pickenter", token: token });
+            }
+            mark( prev, false );
+            prev = event.target;
+            mark( prev, true );
+        }
+
+        function click( event ) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            var el   = event.target,
+                html = el && el.innerHTML ? el.innerHTML : "";
+
+            mark( el, false );
+            pickOff();
+            reply({
+                ns   : NS,
+                type : "picked",
+                token: token,
+                url  : location.href,
+                title: document.title || "",
+                html : html.length > MAX_HTML ? html.slice( 0, MAX_HTML ) : html,
+            });
+        }
+
+        document.addEventListener( "mousemove", move, true );
+        document.addEventListener( "click", click, true );
+
+        pickStop = function () {
+            document.removeEventListener( "mousemove", move, true );
+            document.removeEventListener( "click", click, true );
+            mark( prev, false );
+            prev = null;
+            if ( style.parentNode ) style.parentNode.removeChild( style );
+            pickStop = null;
+        };
+    }
+
+    function pickOff() {
+        if ( pickStop ) pickStop();
+    }
+
     window.addEventListener( "message", function ( event ) {
         var data = event.data, out, html;
 
         if ( !data || data.ns !== NS || !data.token ) return;
 
         // a descendant answered; pass it one hop up toward the top frame
-        if ( data.type === "metrics" || data.type === "content" || data.type === "error" ) {
+        if ( data.type === "metrics"   || data.type === "content" || data.type === "error" ||
+             data.type === "pickenter" || data.type === "picked" ) {
             reply( data );
+            return;
+        }
+
+        if ( data.type === "pick" ) {
+            pickOn( data.token );
+            return;
+        }
+
+        if ( data.type === "pickoff" ) {
+            pickOff();
             return;
         }
 

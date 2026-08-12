@@ -3,39 +3,81 @@ console.log( "=== simpread highlight load ===" )
 const highlight_class = "simpread-highlight-selector";
 
 /**
- * Highlight
- * 
- * @return {promise} promise
+ * Is this element a frame?
+ *
+ * Frames are never a valid pick in the top document: their innerHTML is empty, so
+ * choosing one yields nothing. Only their *contents* are selectable, and those are
+ * reached through iframe.Pick instead.
+ *
+ * @param  {element} target
+ * @return {boolean}
  */
-function start() {
-    let $prev;
+function isFrame( el ) {
+    return !!el && !!el.tagName && /^(IFRAME|FRAME)$/.test( el.tagName );
+}
+
+/**
+ * Highlight
+ *
+ * Resolves the picked element, except for a pick made inside a frame — mouse events over
+ * a frame never reach this document, so those come from a picker running on the far side
+ * and arrive as `{ srframe: true, payload }`, a finished payload rather than a node.
+ * @see pick() in src/service/iframe.js, and Highlight() in src/read/read.jsx
+ *
+ * framePick is injected rather than imported: this module is generic DOM plumbing and is
+ * reachable from the options bundles through runtime.js, while iframe.js pulls in
+ * puplugin ( 130KB ). Callers that have no use for frame content — focus mode, which
+ * does not support it at all — simply omit it.
+ *
+ * @param  {function} optional frame picker, iframe.Pick
+ * @return {promise}  promise
+ */
+function start( framePick ) {
+    let $prev, stopFrames;
     const dtd            = $.Deferred(),
-          mousemoveEvent = event => {
-            if ( !$prev ) {
-                $( event.target ).addClass( highlight_class );
-            } else {
-                $prev.removeClass( highlight_class );
-                $( event.target ).addClass( highlight_class );
-            }
-            $prev = $( event.target );
-    };
-    $( "html" ).one( "click", event => {
-        if ( !$prev ) return;
-        $( event.target ).removeClass( highlight_class );
-        $( "html"       ).off( "mousemove", mousemoveEvent );
-        $prev = undefined;
-        dtd.resolve( event.target );
-        return false;
-    });
-    $( "html" ).one( "keydown", event => {
-        if ( event.keyCode == 27 && $prev ) {
-            $( "html" ).find( `.${highlight_class}` ).removeClass( highlight_class );
-            $( "html" ).off( "mousemove", mousemoveEvent );
+          clear          = () => {
+            $prev && $prev.removeClass( highlight_class );
             $prev = undefined;
-            event.preventDefault();
+    },
+          teardown       = () => {
+            $( "html" ).off( "mousemove", mousemoveEvent );
+            $( "html" ).off( "click", clickEvent );
+            $( "html" ).off( "keydown", keydownEvent );
+            stopFrames && stopFrames();
+            clear();
+    },
+          mousemoveEvent = event => {
+            if ( isFrame( event.target )) return;
+            $prev && $prev.removeClass( highlight_class );
+            $( event.target ).addClass( highlight_class );
+            $prev = $( event.target );
+    },
+          clickEvent     = event => {
+            if ( !$prev || isFrame( event.target )) return;
+            const target = event.target;
+            teardown();
+            $( target ).removeClass( highlight_class );
+            dtd.resolve( target );
             return false;
-        }
-    });
+    },
+          keydownEvent   = event => {
+            if ( event.keyCode == 27 && $prev ) {
+                teardown();
+                $( "html" ).find( `.${highlight_class}` ).removeClass( highlight_class );
+                event.preventDefault();
+                return false;
+            }
+    };
+
+    // clear(): once the pointer is inside a frame the outline left behind out here is
+    // stale, and two highlighted elements at once reads as a bug
+    framePick && ( stopFrames = framePick( payload => {
+        teardown();
+        dtd.resolve({ srframe: true, payload });
+    }, clear ));
+
+    $( "html" ).on( "click",    clickEvent );
+    $( "html" ).on( "keydown",  keydownEvent );
     $( "html" ).on( "mousemove", mousemoveEvent );
     return dtd;
 }

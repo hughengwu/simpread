@@ -257,7 +257,7 @@ class Read extends React.Component {
                     })
                     .fail( why => {
                         console.warn( "simpread iframe action failed:", why );
-                        new Notify().Render( 2, "未能从内嵌页面中提取正文。" );
+                        new Notify().Render( 2, "未能自动识别内嵌页面（iframe）中的正文，请改用「重新选项高亮区域」直接框选。" );
                     });
                 break;
             case "highlight":
@@ -345,11 +345,28 @@ function Render( callMathjax = true ) {
 
 /**
  * High light current page to read mode( read only )
+ *
+ * Every manual selection in the extension funnels through here, so the frame case is
+ * handled once, here, rather than at each of the four call sites.
  */
 function Highlight() {
     const dtd = $.Deferred();
-    highlight.Start().done( dom => {
-        dtd.resolve( dom );
+    highlight.Start( iframe.Pick ).done( result => {
+        // A pick made inside a frame comes back as a finished payload, not a node: the
+        // element lives in another document, and both things a caller would do with it —
+        // pr.TempMode() and highlight.Control() — resolve against the top document. So
+        // apply and render here, and leave the deferred unsettled so the caller's own
+        // TempMode path never runs on something it can not handle.
+        if ( result && result.srframe ) {
+            if ( iframe.Apply( result.payload )) {
+                Render();
+            } else {
+                new Notify().Render( 2, "选中的内嵌页面区域没有可用的正文，请重新框选。" );
+                Highlight().done( dom => dtd.resolve( dom ));
+            }
+            return;
+        }
+        dtd.resolve( result );
     });
     return dtd;
 }
