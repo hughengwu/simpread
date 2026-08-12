@@ -38,15 +38,31 @@ import * as puplugin   from 'puplugin';
 
 const STATE     = "iframe",        // storage.pr.state value for iframe sourced content
       FRAME_ATTR= "data-simpread-frame-id",
+      NS        = "simpread-frame",// postMessage namespace, @see src/framescript.js
 
       MAX_DEPTH = 2,               // how deep to walk nested frames
       MAX_FRAMES= 30,              // total frames visited, guards against frame bombs
       MAX_SCORED= 8,               // how many phase 1 survivors get scored
       MIN_SIDE  = 250,             // px; kills 300x250 / 728x90 / 160x600 ad slots
       MIN_TEXT  = 400,             // chars; aligns with Readability DEFAULT_CHAR_THRESHOLD
-      MIN_SCORE = 3000;            // ~400 chars of pure prose in a decently sized frame
+      MIN_SCORE = 3000,            // ~400 chars of pure prose in a decently sized frame
+      FETCH_WAIT= 8000,            // ms to wait for a frame's content before giving up
+      PROBE_AGAIN= 1500;           // ms; second probe round, catches late mounted frames
 
 let frame_seed = 0;
+
+/**
+ * Metrics reported by cross origin frame agents, keyed by the token stamped on the
+ * frame element. Populated asynchronously by probing, which is why probing has to run
+ * ahead of time: has() is called from synchronous branch conditions and can only read
+ * what has already arrived.
+ */
+const reported = new Map();
+
+/**
+ * Deferreds waiting on a `content` reply, keyed by token
+ */
+const pending  = new Map();
 
 /**
  * Element.matches with legacy fallbacks
@@ -81,6 +97,81 @@ function frameDocument( el ) {
         return undefined;
     }
     return doc && doc.body ? doc : undefined;
+}
+
+/**
+ * Stamp a frame element with a stable, unguessable handle
+ *
+ * The token doubles as the anti-spoof secret: a page script that cannot read the
+ * attribute cannot forge metrics for a frame it does not control. crypto.randomUUID is
+ * not available in every Chrome this build targets, hence the manual composition.
+ *
+ * @param  {element} frame element
+ * @return {string}  token
+ */
+function tokenFor( el ) {
+    let token = el.getAttribute( FRAME_ATTR );
+    if ( !token ) {
+        token = `sr-frame-${ ++frame_seed }-${ Math.random().toString( 36 ).slice( 2, 10 ) }`;
+        el.setAttribute( FRAME_ATTR, token );
+    }
+    return token;
+}
+
+/**
+ * Ask every cross origin frame for its metrics
+ *
+ * Same origin frames are read directly and are deliberately not probed. Runs on
+ * install and again shortly after, then on every manual invocation, so the registry is
+ * warm by the time a synchronous has() consults it.
+ */
+function probeAll( root = document, depth = 0 ) {
+    if ( depth >= MAX_DEPTH ) return;
+
+    const frames = root.querySelectorAll( "iframe, frame" );
+    for ( let i = 0; i < frames.length; i++ ) {
+        const el  = frames[i],
+              doc = frameDocument( el );
+        if ( doc ) {
+            // reachable directly; recurse for any cross origin grandchildren
+            probeAll( doc, depth + 1 );
+            continue;
+        }
+        try {
+            el.contentWindow && el.contentWindow.postMessage(
+                { ns: NS, type: "probe", token: tokenFor( el ) }, "*" );
+        } catch ( error ) {}
+    }
+}
+
+/**
+ * window message handler for frame agent replies
+ */
+function onMessage( event ) {
+    const data = event.data;
+    if ( !data || data.ns != NS || !data.token ) return;
+
+    if ( data.type == "metrics" ) {
+        reported.set( data.token, data );
+        return;
+    }
+
+    const dtd = pending.get( data.token );
+    if ( !dtd ) return;
+    pending.delete( data.token );
+
+    data.type == "content" && data.html ?
+        dtd.resolve( data ) :
+        dtd.reject( data.why || "frame returned no content" );
+}
+
+/**
+ * Start listening and warm the registry. Called once from contentscripts.js.
+ */
+function install() {
+    window.addEventListener( "message", onMessage, false );
+    probeAll();
+    setTimeout( () => probeAll(), PROBE_AGAIN );
 }
 
 /**
@@ -150,23 +241,26 @@ function collect( root, depth = 0, acc = [], sized = measurable() ) {
         const style = root.defaultView ? root.defaultView.getComputedStyle( el ) : undefined;
         if ( style && ( style.display == "none" || style.visibility == "hidden" )) continue;
 
-        const doc = frameDocument( el );
-        if ( !doc ) continue;
+        const doc   = frameDocument( el ),
+              token = tokenFor( el ),
+              // cross origin: usable only once its agent has answered a probe
+              stats = doc ? undefined : reported.get( token );
 
-        !el.getAttribute( FRAME_ATTR ) && el.setAttribute( FRAME_ATTR, `sr-frame-${++frame_seed}` );
+        if ( !doc && !stats ) continue;
 
         acc.push({
-            id        : el.getAttribute( FRAME_ATTR ),
-            el,                              // present only when sameOrigin === true
+            id        : token,
+            el,                              // always present: the element is ours
             doc,                             // present only when sameOrigin === true
-            url       : frameURL( el, doc ),
+            stats,                           // present only when sameOrigin === false
+            url       : doc ? frameURL( el, doc ) : stats.url,
             area      : sized ? rect.width * rect.height : -1,   // -1: unknown
-            sameOrigin: true,
+            sameOrigin: !!doc,
             textLen   : 0,
             score     : 0,
         });
 
-        collect( doc, depth + 1, acc, sized );
+        doc && collect( doc, depth + 1, acc, sized );
     }
 
     return acc;
@@ -188,31 +282,50 @@ function collect( root, depth = 0, acc = [], sized = measurable() ) {
  * @return {number} score
  */
 function rank( item ) {
-    const doc  = item.doc,
-          text = ( doc.body.innerText || doc.body.textContent || "" ).trim();
+    // A cross origin frame computed these itself, in framescript.js, to the same
+    // definitions; a same origin one is measured here. One formula either way, so a
+    // frame does not win or lose merely by which side of an origin boundary it sits on.
+    const signals = item.sameOrigin ? measure( item.doc ) : item.stats;
 
-    item.textLen = text.length;
+    item.textLen = signals.textLen;
     if ( item.textLen < MIN_TEXT ) return item.score = 0;
 
-    const links = doc.body.querySelectorAll( "a" );
-    let linkLen = 0;
-    for ( let i = 0; i < links.length; i++ ) linkLen += ( links[i].textContent || "" ).length;
-
-    const linkDensity = Math.min( linkLen / item.textLen, 0.95 ),
-          blocks      = doc.body.querySelectorAll( "p, li" );
-
-    let paras = 0;
-    for ( let i = 0; i < blocks.length; i++ ) {
-        ( blocks[i].textContent || "" ).trim().length >= 40 && paras++;
-    }
-
-    const semantic = doc.querySelector( "article, main, [itemprop='articleBody'], [role='main']" ) ? 1.35 : 1,
-          viewport = Math.max( window.innerWidth * window.innerHeight, 1 ),
+    const linkDensity = Math.min( signals.linkLen / item.textLen, 0.95 ),
+          viewport    = Math.max( window.innerWidth * window.innerHeight, 1 ),
           // area -1 means the page was not laid out when it was collected; no size
           // signal is better than a fake penalty, so weight it neutrally
-          areaW    = item.area < 0 ? 1 : Math.min( 1, item.area / ( 0.15 * viewport )) * 0.5 + 0.5;
+          areaW       = item.area < 0 ? 1 : Math.min( 1, item.area / ( 0.15 * viewport )) * 0.5 + 0.5;
 
-    return item.score = item.textLen * ( 1 - linkDensity ) * ( 1 + Math.min( paras, 20 ) / 20 ) * semantic * areaW;
+    return item.score = item.textLen * ( 1 - linkDensity ) *
+                        ( 1 + Math.min( signals.paras, 20 ) / 20 ) * signals.semantic * areaW;
+}
+
+/**
+ * Content signals for a reachable document
+ *
+ * Kept identical to metrics() in src/framescript.js — if one side drifts, cross origin
+ * and same origin frames stop being comparable.
+ *
+ * @param  {document} same origin document
+ * @return {object}   { textLen, linkLen, paras, semantic }
+ */
+function measure( doc ) {
+    const text  = ( doc.body.innerText || doc.body.textContent || "" ).trim(),
+          links = doc.body.querySelectorAll( "a" ),
+          block = doc.body.querySelectorAll( "p, li" );
+
+    let linkLen = 0, paras = 0;
+    for ( let i = 0; i < links.length; i++ ) linkLen += ( links[i].textContent || "" ).length;
+    for ( let i = 0; i < block.length; i++ ) {
+        ( block[i].textContent || "" ).trim().length >= 40 && paras++;
+    }
+
+    return {
+        textLen : text.length,
+        linkLen,
+        paras,
+        semantic: doc.querySelector( "article, main, [itemprop='articleBody'], [role='main']" ) ? 1.35 : 1,
+    };
 }
 
 /**
@@ -291,6 +404,21 @@ function cloneForParse( frameDoc ) {
     // the Readability constructor throws on a document without a documentElement
     if ( !doc || !doc.documentElement ) return undefined;
 
+    rebase( doc, base );
+    return doc;
+}
+
+/**
+ * Prepend a <base href> so relative urls resolve against the frame, not the top page
+ *
+ * Prepending is what makes it win over any <base> that came with the document, while
+ * the value itself already reflects that one — it was read from the live document's
+ * baseURI, which the browser had already resolved.
+ *
+ * @param {document} document to modify
+ * @param {string}   absolute base url
+ */
+function rebase( doc, base ) {
     let head = doc.head || doc.getElementsByTagName( "head" )[0];
     if ( !head ) {
         head = doc.createElement( "head" );
@@ -300,8 +428,48 @@ function cloneForParse( frameDoc ) {
     const tag = doc.createElement( "base" );
     tag.setAttribute( "href", base );
     head.insertBefore( tag, head.firstChild );
+}
 
-    return doc;
+/**
+ * Strip anything executable from a document parsed out of a cross origin frame
+ *
+ * read.jsx renders the article with dangerouslySetInnerHTML. innerHTML does not run
+ * <script>, but it does fire <img onerror>, and javascript: hrefs still work on click.
+ * A cross origin frame is less trusted than the page hosting it, so without this an ad
+ * frame could escape its own origin into the top page's.
+ *
+ * Applies to the cross origin path only: same origin frames and the top document keep
+ * the trust level they already had, so existing behaviour is unchanged.
+ *
+ * Safe to do here because the document came from DOMParser and is inert — nothing in
+ * it has run or will run before it is serialized back out.
+ *
+ * @param {document} parsed document, mutated in place
+ */
+function sanitize( doc ) {
+    const drop = doc.querySelectorAll( "script, iframe, frame, frameset, object, embed, applet, form, link, meta, base, noscript" );
+    for ( let i = 0; i < drop.length; i++ ) drop[i].parentNode && drop[i].parentNode.removeChild( drop[i] );
+
+    const all = doc.querySelectorAll( "*" );
+    for ( let i = 0; i < all.length; i++ ) {
+        const el = all[i], attrs = el.attributes;
+        // backwards: removing shifts the live NamedNodeMap
+        for ( let j = attrs.length - 1; j >= 0; j-- ) {
+            const name  = attrs[j].name,
+                  lower = name.toLowerCase(),
+                  value = ( attrs[j].value || "" ).replace( /[\s -]/g, "" ).toLowerCase();
+
+            if ( lower.startsWith( "on" ) || lower == "srcdoc" ) {
+                el.removeAttribute( name );
+                continue;
+            }
+            if ( [ "href", "src", "xlink:href", "action", "formaction", "data" ].includes( lower ) &&
+                 ( value.startsWith( "javascript:" ) || value.startsWith( "data:text/html" ) ||
+                   value.startsWith( "vbscript:" ) )) {
+                el.removeAttribute( name );
+            }
+        }
+    }
 }
 
 /**
@@ -387,8 +555,20 @@ function resolveInclude( frameDoc, include ) {
  * @return {promise}  resolve( { html, title, excerpt, url } )
  */
 function extract( item, site ) {
+    if ( !item ) {
+        const dtd = $.Deferred();
+        dtd.reject( "no candidate" );
+        return dtd;
+    }
+    return item.sameOrigin ? extractLocal( item, site ) : extractRemote( item, site );
+}
+
+/**
+ * Extract from a frame we can read directly
+ */
+function extractLocal( item, site ) {
     const dtd      = $.Deferred(),
-          frameDoc = item && item.doc;
+          frameDoc = item.doc;
 
     if ( !frameDoc ) {
         dtd.reject( "no accessible frame document" );
@@ -398,7 +578,12 @@ function extract( item, site ) {
     if ( site && site.include && site.include.trim() != "" ) {
         const html = resolveInclude( frameDoc, site.include.trim() );
         if ( html ) {
-            dtd.resolve({ html, title: frameDoc.title, excerpt: "", url: item.url });
+            dtd.resolve({
+                html   : absolutize( html, frameDoc.baseURI || frameDoc.URL || item.url ),
+                title  : frameDoc.title,
+                excerpt: "",
+                url    : item.url,
+            });
             return dtd;
         }
     }
@@ -408,7 +593,177 @@ function extract( item, site ) {
         dtd.reject( "frame document can not be cloned" );
         return dtd;
     }
+    return readability( doc, item.url, dtd );
+}
 
+/**
+ * Rewrite relative urls in an html fragment to absolute
+ *
+ * Readability resolves urls itself ( _fixRelativeUris, against baseURI ), but a rule
+ * driven `include` bypasses Readability entirely: the html comes straight out of
+ * innerHTML, which serializes the *source* attributes. A <base> element cannot help
+ * once the markup has left its document, so every relative src/href would end up
+ * resolved against the top page after injection — the wrong origin entirely for a
+ * cross origin frame, and the wrong directory for a same origin one.
+ *
+ * @param  {string} html fragment
+ * @param  {string} absolute base url
+ * @return {string} html with absolute urls
+ */
+function absolutize( html, base ) {
+    let doc;
+    try {
+        doc = new DOMParser().parseFromString( html, "text/html" );
+    } catch ( error ) {
+        return html;
+    }
+    if ( !doc || !doc.body ) return html;
+
+    const attrs = [ "src", "href", "poster", "data-src", "data-original" ],
+          nodes = doc.body.querySelectorAll( "[" + attrs.join( "],[" ) + "],[srcset]" );
+
+    for ( let i = 0; i < nodes.length; i++ ) {
+        const el = nodes[i];
+
+        attrs.forEach( name => {
+            const value = el.getAttribute( name );
+            if ( !value || value.startsWith( "#" ) || /^[a-z][a-z0-9+.-]*:/i.test( value )) return;
+            try {
+                el.setAttribute( name, new URL( value, base ).href );
+            } catch ( error ) {}
+        });
+
+        // srcset is a comma separated list of "url descriptor" pairs
+        const srcset = el.getAttribute( "srcset" );
+        srcset && el.setAttribute( "srcset", srcset.split( "," ).map( part => {
+            const bits = part.trim().split( /\s+/ );
+            if ( !bits[0] || /^[a-z][a-z0-9+.-]*:/i.test( bits[0] )) return part.trim();
+            try {
+                bits[0] = new URL( bits[0], base ).href;
+            } catch ( error ) {}
+            return bits.join( " " );
+        }).join( ", " ));
+    }
+
+    return doc.body.innerHTML;
+}
+
+/**
+ * Normalize a site rule's `include` into something the frame agent can apply
+ *
+ * The agent only does querySelectorAll and document.evaluate, so the puread tag
+ * notation stored in website_list.json ( "<div class='post'>" ) has to be converted to
+ * a real selector on this side — the same conversion resolveInclude() does for same
+ * origin frames. The [[`xpath`]] form travels as-is; the other three special forms are
+ * code bound to a document and are dropped here so the agent falls through to shipping
+ * its whole document for Readability.
+ *
+ * @param  {string} raw include value
+ * @return {string} selector or [[`xpath`]], "" when unusable
+ */
+function remoteInclude( include ) {
+    if ( include == "" ) return "";
+
+    if ( verifyHtml( include )[0] == 2 ) {
+        if ( include.startsWith( "[[`" ) && include.endsWith( "`]]" )) return include;
+        console.warn( "simpread iframe: unsupported include form in frame mode", include );
+        new Notify().Render( 2, "iframe 模式下的正文选取仅支持 CSS 选择器与 [[`xpath`]]，已改用自动识别。" );
+        return "";
+    }
+
+    return tag2Selector( include );
+}
+
+/**
+ * Extract from a cross origin frame, over postMessage
+ *
+ * The frame agent resolves a site rule's `include` on its own side ( it is the only
+ * side that can ) and otherwise ships its whole document; either way what comes back
+ * is an html string, which is exactly the serialized shape this module was built
+ * around. A frame that never answers — sandboxed without allow-scripts, or simply
+ * gone — must not leave the UI waiting, hence the timeout.
+ */
+function extractRemote( item, site ) {
+    const dtd     = $.Deferred(),
+          token   = item.id,
+          include = remoteInclude( site && site.include ? site.include.trim() : "" );
+
+    let win;
+    try {
+        win = item.el && item.el.contentWindow;
+    } catch ( error ) {}
+    if ( !win ) {
+        dtd.reject( "frame window is gone" );
+        return dtd;
+    }
+
+    const wire = $.Deferred(),
+          timer = setTimeout( () => {
+              pending.delete( token );
+              wire.reject( "frame did not answer in time" );
+          }, FETCH_WAIT );
+
+    pending.set( token, wire );
+    try {
+        win.postMessage({ ns: NS, type: "fetch", token, include }, "*" );
+    } catch ( error ) {
+        clearTimeout( timer );
+        pending.delete( token );
+        dtd.reject( "frame is not reachable" );
+        return dtd;
+    }
+
+    wire.done( reply => {
+        clearTimeout( timer );
+
+        const url = reply.url || item.url;
+        let doc;
+        try {
+            doc = new DOMParser().parseFromString( reply.html, "text/html" );
+        } catch ( error ) {
+            dtd.reject( "frame content could not be parsed" );
+            return;
+        }
+        if ( !doc || !doc.documentElement ) {
+            dtd.reject( "frame content could not be parsed" );
+            return;
+        }
+
+        // order matters: strip executable content before anything reads the tree, and
+        // add our own <base> after, so sanitize() removing cloned <base> tags cannot
+        // take ours with it
+        sanitize( doc );
+        rebase( doc, url );
+
+        // an include resolved by the agent is already the article body; wrapping it in
+        // Readability would only re-guess a decision the rule already made
+        if ( include && reply.resolved ) {
+            dtd.resolve({
+                html   : absolutize( doc.body.innerHTML, url ),
+                title  : reply.title || "",
+                excerpt: "",
+                url,
+            });
+            return;
+        }
+        readability( doc, url, dtd );
+    }).fail( why => {
+        clearTimeout( timer );
+        dtd.reject( why );
+    });
+
+    return dtd;
+}
+
+/**
+ * Run Readability over a prepared document and settle the deferred
+ *
+ * @param  {document} inert document, already rebased
+ * @param  {string}   source url
+ * @param  {object}   deferred to settle
+ * @return {object}   the same deferred
+ */
+function readability( doc, url, dtd ) {
     let article;
     try {
         article = new ( puplugin.Plugin( "rdability" ).Readability )( doc ).parse();
@@ -428,7 +783,7 @@ function extract( item, site ) {
         html   : article.content,
         title  : article.title,
         excerpt: article.excerpt,
-        url    : item.url,
+        url,
     });
     return dtd;
 }
@@ -560,6 +915,8 @@ function enter( options = {} ) {
 }
 
 export {
+    install        as Install,
+    probeAll       as Probe,
     has            as Has,
     candidates     as Candidates,
     detect         as Detect,
