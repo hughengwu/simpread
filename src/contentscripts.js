@@ -48,6 +48,10 @@ storage.Read( () => {
         });
     } else {
         bindShortcuts();
+        // Cross origin frames answer over postMessage, which is async, while Has() is
+        // called from synchronous branch conditions. Probing at startup is what lets it
+        // stay synchronous — by the time a shortcut fires, the replies are in.
+        iframe.Install();
         !isLazyload() && autoOpen();
     }
 });
