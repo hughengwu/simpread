@@ -473,18 +473,20 @@ function resolve( value ) {
  * Inert stand-ins, one per field, chosen so an unresolved field degrades the way that
  * field degrades on its own:
  *
- *   title   "<title>"  ReadMode substitutes the page title
- *   desc    ""         resolves to ""
- *   include ""         resolves to the <sr-rd-content-error> sentinel, and read.jsx
- *                      answers that by running Readability
- *   avatar  "<sr-spec>" and
- *   paging  "<sr-spec>" non empty on purpose: ReadMode drops the whole avatar/paging
- *                      block when the first entry is "", and dropping it would hide the
- *                      fields before they could be filled in
+ *   title   "<title>"   ReadMode substitutes the page title
+ *   desc    ""          resolves to ""
+ *   include "<sr-spec>" resolves to the <sr-rd-content-error> sentinel, which read.jsx
+ *                       answers by running Readability. Not "": ReadMode reads an empty
+ *                       include as "use site.html instead", and site.html is undefined
+ *                       for an ordinary rule, so the sentinel would never appear and the
+ *                       view would render nothing at all
+ *   avatar  "<sr-spec>" non empty on purpose: ReadMode drops the whole avatar/paging
+ *   paging  "<sr-spec>" block when the first entry is "", and dropping it would take the
+ *                       fields away before they could be filled in
  *
  * <sr-spec> is tag notation, so c() turns it into a selector that matches nothing.
  */
-const PLACEHOLDER = { title: "<title>", desc: "", include: "", avatar: "<sr-spec>", paging: "<sr-spec>" };
+const PLACEHOLDER = { title: "<title>", desc: "", include: "<sr-spec>", avatar: "<sr-spec>", paging: "<sr-spec>" };
 
 /**
  * Every code bearing field of a rule, with its resolved value
