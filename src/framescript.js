@@ -24,6 +24,8 @@
  *   down  pickoff  { token }                 disarm it, some other frame won
  *   up    pickenter{ token }                 pointer moved into this frame, throttled
  *   up    picked   { token, url, title, html }
+ *   up    pickcancel { token }               Esc pressed in here, where the top frame
+ *                                            can not see it
  *
  * The top frame addresses a frame by posting to the element's contentWindow, so it can
  * probe a grandchild directly as long as some ancestor chain is same origin enough for
@@ -192,12 +194,23 @@
             });
         }
 
+        // Esc while the focus sits in here never reaches the top frame's own keydown
+        // handler, so the cancel has to be reported explicitly
+        function escape( event ) {
+            if ( event.keyCode !== 27 ) return;
+            event.preventDefault();
+            pickOff();
+            reply({ ns: NS, type: "pickcancel", token: token });
+        }
+
         document.addEventListener( "mousemove", move, true );
         document.addEventListener( "click", click, true );
+        document.addEventListener( "keydown", escape, true );
 
         pickStop = function () {
             document.removeEventListener( "mousemove", move, true );
             document.removeEventListener( "click", click, true );
+            document.removeEventListener( "keydown", escape, true );
             mark( prev, false );
             prev = null;
             if ( style.parentNode ) style.parentNode.removeChild( style );
@@ -216,7 +229,7 @@
 
         // a descendant answered; pass it one hop up toward the top frame
         if ( data.type === "metrics"   || data.type === "content" || data.type === "error" ||
-             data.type === "pickenter" || data.type === "picked" ) {
+             data.type === "pickenter" || data.type === "picked"  || data.type === "pickcancel" ) {
             reply( data );
             return;
         }

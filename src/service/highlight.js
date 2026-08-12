@@ -33,13 +33,17 @@ function isFrame( el ) {
  * @return {promise}  promise
  */
 function start( framePick ) {
-    let $prev, stopFrames;
+    // `active` rather than $prev: once the pointer moves into a frame the top document's
+    // highlight is cleared, so $prev is no longer a usable "is a session running" test —
+    // guarding Esc on it left the picker armed and the next click still selected.
+    let $prev, stopFrames, active = true;
     const dtd            = $.Deferred(),
           clear          = () => {
             $prev && $prev.removeClass( highlight_class );
             $prev = undefined;
     },
           teardown       = () => {
+            active = false;
             $( "html" ).off( "mousemove", mousemoveEvent );
             $( "html" ).off( "click", clickEvent );
             $( "html" ).off( "keydown", keydownEvent );
@@ -61,7 +65,7 @@ function start( framePick ) {
             return false;
     },
           keydownEvent   = event => {
-            if ( event.keyCode == 27 && $prev ) {
+            if ( event.keyCode == 27 && active ) {
                 teardown();
                 $( "html" ).find( `.${highlight_class}` ).removeClass( highlight_class );
                 event.preventDefault();
@@ -70,11 +74,13 @@ function start( framePick ) {
     };
 
     // clear(): once the pointer is inside a frame the outline left behind out here is
-    // stale, and two highlighted elements at once reads as a bug
+    // stale, and two highlighted elements at once reads as a bug.
+    // teardown(): Esc pressed while the focus is inside a frame is delivered to that
+    // frame's document and never reaches this one, so the frame reports it instead.
     framePick && ( stopFrames = framePick( payload => {
         teardown();
         dtd.resolve({ srframe: true, payload });
-    }, clear ));
+    }, clear, teardown ));
 
     $( "html" ).on( "click",    clickEvent );
     $( "html" ).on( "keydown",  keydownEvent );

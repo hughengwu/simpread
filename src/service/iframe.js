@@ -205,7 +205,7 @@ function onMessage( event ) {
     }
 
     // manual picking, @see pick
-    if ( data.type == "pickenter" || data.type == "picked" ) {
+    if ( data.type == "pickenter" || data.type == "picked" || data.type == "pickcancel" ) {
         const entry = picking.get( data.token );
         if ( !entry ) return;
         if ( data.type == "pickenter" ) {
@@ -213,7 +213,9 @@ function onMessage( event ) {
             return;
         }
         picking.delete( data.token );
-        entry.onPick( remotePayload( data, entry.item ));
+        data.type == "pickcancel" ?
+            entry.onCancel && entry.onCancel() :
+            entry.onPick( remotePayload( data, entry.item ));
         return;
     }
 
@@ -917,25 +919,33 @@ function pickables( root = document, depth = 0, acc = [] ) {
  * @param  {function} onPick( payload ), fires at most once
  * @param  {function} onEnter, the pointer moved into some frame; used by the top picker
  *                    to drop its own now-stale highlight
+ * @param  {function} onCancel, Esc was pressed inside a frame — that keydown goes to the
+ *                    frame's document and never reaches the top one, so it is relayed
  * @return {function} teardown, safe to call after a pick
  */
-function pick( onPick, onEnter ) {
+function pick( onPick, onEnter, onCancel ) {
     const stops = [];
     let done = false;
 
-    const stop = () => stops.forEach( fn => {
+    const stop   = () => stops.forEach( fn => {
               try { fn(); } catch ( error ) {}
           }),
-          hit  = payload => {
+          hit    = payload => {
               if ( done ) return;
               done = true;
               stop();
               onPick( payload );
+          },
+          cancel = () => {
+              if ( done ) return;
+              done = true;
+              stop();
+              onCancel && onCancel();
           };
 
     pickables().forEach( item => {
-        stops.push( item.sameOrigin ? pickLocal( item, hit, onEnter ) :
-                                      pickRemote( item, hit, onEnter ));
+        stops.push( item.sameOrigin ? pickLocal( item, hit, onEnter, cancel ) :
+                                      pickRemote( item, hit, onEnter, cancel ));
     });
 
     return stop;
@@ -951,9 +961,10 @@ function pick( onPick, onEnter ) {
  * @param  {object}   pickable descriptor
  * @param  {function} onPick( payload )
  * @param  {function} onEnter
+ * @param  {function} onCancel
  * @return {function} teardown
  */
-function pickLocal( item, onPick, onEnter ) {
+function pickLocal( item, onPick, onEnter, onCancel ) {
     const doc   = item.doc,
           style = doc.createElement( "style" );
 
@@ -986,9 +997,16 @@ function pickLocal( item, onPick, onEnter ) {
               onPick( localPayload( item, event.target ));
           },
 
+          escape = event => {
+              if ( event.keyCode != 27 ) return;
+              event.preventDefault();
+              onCancel && onCancel();
+          },
+
           teardown = () => {
               doc.removeEventListener( "mousemove", move, true );
               doc.removeEventListener( "click", click, true );
+              doc.removeEventListener( "keydown", escape, true );
               wipe( prev );
               prev = undefined;
               style.parentNode && style.parentNode.removeChild( style );
@@ -996,6 +1014,7 @@ function pickLocal( item, onPick, onEnter ) {
 
     doc.addEventListener( "mousemove", move, true );
     doc.addEventListener( "click", click, true );
+    doc.addEventListener( "keydown", escape, true );
 
     return teardown;
 }
@@ -1006,16 +1025,17 @@ function pickLocal( item, onPick, onEnter ) {
  * @param  {object}   pickable descriptor
  * @param  {function} onPick( payload )
  * @param  {function} onEnter
+ * @param  {function} onCancel
  * @return {function} teardown
  */
-function pickRemote( item, onPick, onEnter ) {
+function pickRemote( item, onPick, onEnter, onCancel ) {
     let win;
     try {
         win = item.el && item.el.contentWindow;
     } catch ( error ) {}
     if ( !win ) return () => {};
 
-    picking.set( item.id, { item, onPick, onEnter });
+    picking.set( item.id, { item, onPick, onEnter, onCancel });
     try {
         win.postMessage({ ns: NS, type: "pick", token: item.id }, "*" );
     } catch ( error ) {}
