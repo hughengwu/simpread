@@ -578,7 +578,12 @@ function extractLocal( item, site ) {
     if ( site && site.include && site.include.trim() != "" ) {
         const html = resolveInclude( frameDoc, site.include.trim() );
         if ( html ) {
-            dtd.resolve({ html, title: frameDoc.title, excerpt: "", url: item.url });
+            dtd.resolve({
+                html   : absolutize( html, frameDoc.baseURI || frameDoc.URL || item.url ),
+                title  : frameDoc.title,
+                excerpt: "",
+                url    : item.url,
+            });
             return dtd;
         }
     }
@@ -589,6 +594,58 @@ function extractLocal( item, site ) {
         return dtd;
     }
     return readability( doc, item.url, dtd );
+}
+
+/**
+ * Rewrite relative urls in an html fragment to absolute
+ *
+ * Readability resolves urls itself ( _fixRelativeUris, against baseURI ), but a rule
+ * driven `include` bypasses Readability entirely: the html comes straight out of
+ * innerHTML, which serializes the *source* attributes. A <base> element cannot help
+ * once the markup has left its document, so every relative src/href would end up
+ * resolved against the top page after injection — the wrong origin entirely for a
+ * cross origin frame, and the wrong directory for a same origin one.
+ *
+ * @param  {string} html fragment
+ * @param  {string} absolute base url
+ * @return {string} html with absolute urls
+ */
+function absolutize( html, base ) {
+    let doc;
+    try {
+        doc = new DOMParser().parseFromString( html, "text/html" );
+    } catch ( error ) {
+        return html;
+    }
+    if ( !doc || !doc.body ) return html;
+
+    const attrs = [ "src", "href", "poster", "data-src", "data-original" ],
+          nodes = doc.body.querySelectorAll( "[" + attrs.join( "],[" ) + "],[srcset]" );
+
+    for ( let i = 0; i < nodes.length; i++ ) {
+        const el = nodes[i];
+
+        attrs.forEach( name => {
+            const value = el.getAttribute( name );
+            if ( !value || value.startsWith( "#" ) || /^[a-z][a-z0-9+.-]*:/i.test( value )) return;
+            try {
+                el.setAttribute( name, new URL( value, base ).href );
+            } catch ( error ) {}
+        });
+
+        // srcset is a comma separated list of "url descriptor" pairs
+        const srcset = el.getAttribute( "srcset" );
+        srcset && el.setAttribute( "srcset", srcset.split( "," ).map( part => {
+            const bits = part.trim().split( /\s+/ );
+            if ( !bits[0] || /^[a-z][a-z0-9+.-]*:/i.test( bits[0] )) return part.trim();
+            try {
+                bits[0] = new URL( bits[0], base ).href;
+            } catch ( error ) {}
+            return bits.join( " " );
+        }).join( ", " ));
+    }
+
+    return doc.body.innerHTML;
 }
 
 /**
@@ -681,7 +738,12 @@ function extractRemote( item, site ) {
         // an include resolved by the agent is already the article body; wrapping it in
         // Readability would only re-guess a decision the rule already made
         if ( include && reply.resolved ) {
-            dtd.resolve({ html: doc.body.innerHTML, title: reply.title || "", excerpt: "", url });
+            dtd.resolve({
+                html   : absolutize( doc.body.innerHTML, url ),
+                title  : reply.title || "",
+                excerpt: "",
+                url,
+            });
             return;
         }
         readability( doc, url, dtd );
