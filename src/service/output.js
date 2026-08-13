@@ -71,7 +71,7 @@ function action( type, title, desc, content ) {
                 break;
         }
         type.split("_")[1] != "card" && browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.new_tab, { url }));
-    } else if ( [ "save", "markdown", "offlinemarkdown", "png", "kindle", "pdf", "epub", "temp", "html", "offlinehtml", "snapshot", "bear", "ulysses" ].includes( type ) ) {
+    } else if ( [ "save", "markdown", "offlinemarkdown", "png", "kindle", "pdf", "epub", "temp", "html", "offlinehtml", "snapshot", "bear", "ulysses", "obsidian" ].includes( type ) ) {
         storage.Statistics( "service", type );
         browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.track, { eventCategory: "service", eventAction: "service", eventValue: type }) );
         switch ( type ) {
