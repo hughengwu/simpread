@@ -132,10 +132,17 @@ function first( ...values ) {
  * @return {object} { title, author, published, description, url, created }
  */
 function metadata( title = "", desc = "" ) {
+    // The read-mode title only outranks the page's metadata when it says something the
+    // metadata does not. Equal to <title> it is just <title> arriving by another route,
+    // and letting it win there would demote og:title, which the clipper prefers. Different
+    // from <title> it came from a frame or a manual selection, and it is the only source
+    // that describes what is actually on screen.
+    const dom  = (( document.querySelector( "title" ) || {} ).textContent || "" ).trim(),
+          read = title.trim() == dom ? "" : title;
     return {
         url         : location.href.replace( /(\?|&)simpread_mode=read/, "" ),
         created     : stamp( new Date() ),
-        title       : first( title,
+        title       : first( read,
                              meta( "property", "og:title" ),
                              meta( "name", "twitter:title" ),
                              schema( "headline" ),
@@ -276,6 +283,14 @@ function markdown( html, url ) {
     const holder = document.createElement( "div" );
     holder.innerHTML = html;
 
+    // Read mode renames blockquote so its own stylesheet can own the element; turndown
+    // only knows the real one. @see util.ClearMD, which does the same over the string.
+    holder.querySelectorAll( "sr-blockquote" ).forEach( el => {
+        const quote = document.createElement( "blockquote" );
+        while ( el.firstChild ) quote.appendChild( el.firstChild );
+        el.parentNode.replaceChild( quote, el );
+    });
+
     const absolute = value => {
         if ( !value || /^(https?:|data:|#|mailto:)/i.test( value )) return value;
         try { return new URL( value, url ).href; } catch ( error ) { return value; }
@@ -317,6 +332,14 @@ function markdown( html, url ) {
             }
             return prefix + content + "\n";
         }
+    });
+
+    // Read mode unwraps <pre><code> down to a bare <pre>, which turndown's fenced rule no
+    // longer recognises — the block would come out as an ordinary paragraph and lose its
+    // formatting entirely. @see export.js, which carries the same rule for the same reason.
+    service.addRule( "pre", {
+        filter: [ "pre" ],
+        replacement: content => "\n\n```\n" + content.replace( /\n+$/, "" ) + "\n```\n\n"
     });
 
     service.addRule( "figure", {
