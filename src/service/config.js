@@ -158,6 +158,11 @@ const keyboard = {
             "type" : "ulysses",
             "desc" : "保存到 Ulysses",
         },
+        ob: {
+            "kbd"  : "ob",
+            "type" : "obsidian",
+            "desc" : "保存到 Obsidian",
+        },
     },
     "控制栏 - 无障碍" : {
         ts: {
@@ -426,6 +431,11 @@ const readItems = {
             "ulysses" : {
                 "name" : "保存到 Ulysses",
                 "icon" : ss.IconPath("ulysses_icon"),
+                "color": "#00BCD4",
+            },
+            "obsidian" : {
+                "name" : "保存到 Obsidian",
+                "icon" : ss.IconPath("obsidian_icon"),
                 "color": "#00BCD4",
             },
         },

@@ -218,7 +218,7 @@ let current  = {},
         "service" : {},
     },
     secret   = {
-        version   : "2019-12-20",
+        version   : "2026-08-13",
         "dropbox" : {
             "access_token": ""
         },
@@ -270,6 +270,13 @@ let current  = {},
             username      : "",
             password      : "",
             access_token  : "",
+        },
+        // no token: the note is handed over through the obsidian:// scheme, so all that is
+        // kept is where it should land. An empty vault means "whichever Obsidian opened last".
+        "obsidian" : {
+            vault   : "",
+            folder  : "Clippings",
+            tags    : "clippings",
         },
         "webdav"  : []
     };
