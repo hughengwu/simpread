@@ -44,49 +44,95 @@ function onClicked( callback ) {
 }
 
 /**
+ * Rebuild bookkeeping.
+ *
+ * `signature` is the menu options a build was made from. setMenuAndIcon() calls
+ * Create( "read" ) on every navigation to an adaptable page, and each of those used to
+ * tear the whole menu down and put it back — pointless when nothing about the menu
+ * changed, and the source of the races below. A build is now skipped outright when the
+ * options are the same as last time.
+ */
+let building = false, pending = false, signature = "";
+
+/**
+ * Swallow a create/update failure.
+ *
+ * Every contextMenus call gets this. Without a callback Chrome reports the failure as an
+ * "Unchecked runtime.lastError", which is noise nobody can act on, and reading the
+ * property is what marks it handled.
+ */
+const checked = () => { void browser.runtime.lastError; };
+
+/**
  * Create all context menu
  *
  * Everything is torn down first. Under MV3 the worker is restarted whenever it has been
  * idle, and background.js rebuilds the menus on every start, so creating straight away
  * would hit "duplicate id" from the second start onwards. removeAll is async, hence the
  * callback rather than the two back-to-back calls this used to do.
+ *
+ * That same asynchrony is why rebuilds have to be serialized. Two overlapping calls both
+ * queue their removeAll, both run before either build does, and then the second build
+ * duplicates every id the first one just created — "Cannot create item with duplicate id
+ * link" and the same for the separators. A rebuild asked for while one is in flight is
+ * therefore folded into a single one afterwards, not started alongside.
+ *
+ * @param {boolean} rebuild even when the options have not changed
  */
-function createAll() {
-    browser.contextMenus.removeAll( () => build() );
+function createAll( force = false ) {
+    const current = JSON.stringify( storage.option.menu );
+    if ( !force && current == signature ) return;
+    if ( building ) { pending = true; return; }
+
+    building  = true;
+    signature = current;
+    browser.contextMenus.removeAll( () => {
+        build();
+        building = false;
+        if ( pending ) {
+            pending = false;
+            createAll( true );
+        }
+    });
 }
 
 function build() {
+    // ids are only meaningful for items this build actually creates; a stale one left
+    // over from a build where the item was still enabled is what update() would then
+    // aim at, and miss.
+    Object.keys( context ).forEach( key => context[ key ].id = "" );
+
     storage.option.menu.focus &&
-        ( context.focus.id = browser.contextMenus.create( context.focus.menu ));
+        ( context.focus.id = browser.contextMenus.create( context.focus.menu, checked ));
 
     storage.option.menu.read &&
-        ( context.read.id  = browser.contextMenus.create( context.read.menu ));
+        ( context.read.id  = browser.contextMenus.create( context.read.menu, checked ));
 
     storage.option.menu.link &&
-        ( context.link.id  = browser.contextMenus.create( context.link.menu ));
+        ( context.link.id  = browser.contextMenus.create( context.link.menu, checked ));
 
     // MV3 requires an explicit id on every item, separators included
-    browser.contextMenus.create({ "id": "separator-1", "type": "separator" });
+    browser.contextMenus.create({ "id": "separator-1", "type": "separator" }, checked );
 
     storage.option.menu.list &&
-        ( context.list.id     = browser.contextMenus.create( context.list.menu ));
+        ( context.list.id     = browser.contextMenus.create( context.list.menu, checked ));
 
     storage.option.menu.unrdist &&
-        ( context.unrdist.id  = browser.contextMenus.create( context.unrdist.menu ));
+        ( context.unrdist.id  = browser.contextMenus.create( context.unrdist.menu, checked ));
 
-    browser.contextMenus.create({ "id": "separator-2", "type": "separator" });
+    browser.contextMenus.create({ "id": "separator-2", "type": "separator" }, checked );
 
     storage.option.menu.whitelist &&
-        ( context.whitelist.id  = browser.contextMenus.create( context.whitelist.menu ));
+        ( context.whitelist.id  = browser.contextMenus.create( context.whitelist.menu, checked ));
 
     storage.option.menu.exclusion &&
-        ( context.exclusion.id  = browser.contextMenus.create( context.exclusion.menu ));
+        ( context.exclusion.id  = browser.contextMenus.create( context.exclusion.menu, checked ));
 
     storage.option.menu.blacklist &&
-        ( context.blacklist.id  = browser.contextMenus.create( context.blacklist.menu ));
+        ( context.blacklist.id  = browser.contextMenus.create( context.blacklist.menu, checked ));
 
     storage.option.menu.lazyload &&
-        ( context.lazyload.id   = browser.contextMenus.create( context.lazyload.menu ));
+        ( context.lazyload.id   = browser.contextMenus.create( context.lazyload.menu, checked ));
 
     // all menu is false remove contextMenus
     Object.values( storage.option.menu ).findIndex( menu => menu == true ) == -1 && browser.contextMenus.removeAll();
@@ -128,10 +174,13 @@ function remove( type ) {
  * @param {string} include: tempread and read
  */
 function update( type ) {
-    if ( context.read.id ) {
-        const title = type == "read" ? "阅读模式" : "临时阅读模式";
-        browser.contextMenus.update( context.read.id, { title } );
-    }
+    // Not while a rebuild is in flight: removeAll has already run by then, so the item
+    // the id names is gone and Chrome answers with "Cannot find menu item with id read"
+    // — as a rejected promise, which surfaces as an uncaught error rather than a
+    // lastError anyone could swallow.
+    if ( building || !context.read.id ) return;
+    const title = type == "read" ? "阅读模式" : "临时阅读模式";
+    browser.contextMenus.update( context.read.id, { title }, checked );
 }
 
 /**
