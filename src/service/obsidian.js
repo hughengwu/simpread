@@ -354,6 +354,43 @@ function note( title, desc, content, { folder = FOLDER, tags = TAGS } = {} ) {
 }
 
 /**
+ * Put text on the clipboard.
+ *
+ * navigator.clipboard is the right API but it is the one most likely to be refused: it
+ * wants the document focused and a live user activation, and a content script has neither
+ * guaranteed. execCommand is deprecated and synchronous, which is exactly why it still
+ * works here — it runs inside the same task as the click. The textarea goes on
+ * documentElement rather than body because read mode has body hidden, and a selection
+ * inside display:none copies nothing.
+ *
+ * @param  {string} text
+ * @return {object} $.Deferred, rejected when nothing worked
+ */
+function copy( text ) {
+    const dtd = $.Deferred();
+    const fallback = () => {
+        const area = document.createElement( "textarea" );
+        area.value = text;
+        area.setAttribute( "style", "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;" );
+        document.documentElement.appendChild( area );
+        try {
+            area.select();
+            document.execCommand( "copy" ) ? dtd.resolve() : dtd.reject();
+        } catch ( error ) {
+            dtd.reject();
+        } finally {
+            area.remove();
+        }
+    };
+    try {
+        navigator.clipboard.writeText( text ).then( () => dtd.resolve(), fallback );
+    } catch ( error ) {
+        fallback();
+    }
+    return dtd;
+}
+
+/**
  * Save to Obsidian.
  *
  * @param  {string} read mode title
@@ -375,14 +412,11 @@ function save( title, desc, content, options = {} ) {
           open = uri => { location.href = uri; dtd.resolve( uri ); };
 
     // Preferred path: hand the body over on the clipboard, so the note is not limited by
-    // how much a protocol URL can carry. Needs Obsidian >= 1.7.2.
-    try {
-        navigator.clipboard.writeText( text )
-            .then ( () => open( `${base}&clipboard` ) )
-            .catch( () => open( `${base}&content=${ encodeURIComponent( text ) }` ) );
-    } catch ( error ) {
-        open( `${base}&content=${ encodeURIComponent( text ) }` );
-    }
+    // how much a protocol URL can carry. Needs Obsidian >= 1.7.2. If the clipboard is
+    // refused the note goes in the url, which is fine for everything but a long article —
+    // Windows hands the url to the registered app on a command line, and that is capped.
+    copy( text ).done ( () => open( `${base}&clipboard` ) )
+                .fail ( () => open( `${base}&content=${ encodeURIComponent( text ) }` ) );
     return dtd;
 }
 
