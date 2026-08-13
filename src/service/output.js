@@ -11,6 +11,7 @@ import * as offline from 'offline';
 import th           from 'theme';
 import * as ss      from 'stylesheet';
 import * as snap    from 'snapshot';
+import * as obsidian from 'obsidian';
 
 /**
  * Controlbar common action, include:
@@ -70,7 +71,7 @@ function action( type, title, desc, content ) {
                 break;
         }
         type.split("_")[1] != "card" && browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.new_tab, { url }));
-    } else if ( [ "save", "markdown", "offlinemarkdown", "png", "kindle", "pdf", "epub", "temp", "html", "offlinehtml", "snapshot", "bear", "ulysses" ].includes( type ) ) {
+    } else if ( [ "save", "markdown", "offlinemarkdown", "png", "kindle", "pdf", "epub", "temp", "html", "offlinehtml", "snapshot", "bear", "ulysses", "obsidian" ].includes( type ) ) {
         storage.Statistics( "service", type );
         browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.track, { eventCategory: "service", eventAction: "service", eventValue: type }) );
         switch ( type ) {
@@ -174,6 +175,17 @@ function action( type, title, desc, content ) {
                 storage.pr.current.site.avatar[0].name != "" && ( content = util.MULTI2ENML( content ) );
                 toMarkdown( result => {
                     location.href = `bear://x-callback-url/create?title=${title}&text=${encodeURIComponent(result)}&tags=simpread`;
+                });
+                break;
+            case "obsidian":
+                storage.pr.current.site.avatar[0].name != "" && ( content = util.MULTI2ENML( content ) );
+                // Safe() first: the vault/folder live in secret, which is lazily loaded.
+                storage.Safe( () => {
+                    const notify = new Notify().Render({ content: "正在生成 Obsidian 笔记...", state: "loading" });
+                    obsidian.Save( title, desc, content, storage.secret.obsidian ).done( () => {
+                        notify.complete();
+                        new Notify().Render( "已发送到 Obsidian，若浏览器询问是否打开外部程序请选择允许。" );
+                    });
                 });
                 break;
             case "ulysses":

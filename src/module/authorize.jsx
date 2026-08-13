@@ -318,6 +318,15 @@ export default class Auth extends React.Component {
         this.props.weizhi[state] = value;
     }
 
+    /**
+     * Obsidian has nothing to authorize — vault, folder and tags are the whole setting.
+     * Trimming is left to save time: a vault name may legitimately end in a space.
+     */
+    obsidianOnChange( state, value ) {
+        storage.secret.obsidian = { ...( storage.secret.obsidian || {} ), [state]: value };
+        storage.Safe( () => this.setState({ secret: storage.secret }), storage.secret );
+    }
+
     webdavOnChange() {
         this.state.secret.webdav = event.target.value.split("\n");
         storage.Safe( () => this.setState({ secret: storage.secret }), storage.secret );
@@ -611,6 +620,28 @@ export default class Auth extends React.Component {
                             color="#fff" backgroundColor="#3F51B5"
                             waves="md-waves-effect md-waves-button"
                             onClick={ (s)=>this.webdavAuth() } />
+                        </div>
+
+                        <div className="version-tips" data-version="1.1.4" data-hits="obsidian">
+                        <div className="label" style={{'margin-bottom':' -15px'}}>Obsidian</div>
+                        <div className="sublabel">通过 obsidian:// 保存，无需授权。笔记格式与 Obsidian Web Clipper 一致，需 Obsidian 1.7.2 及以上版本</div>
+                        <div style={{ "display": "flex", "flex-direction": "row" }}>
+                            <TextField
+                                placeholder="仓库（vault）名称，留空则保存到最近打开的仓库。"
+                                value={ ( this.state.secret.obsidian || {} ).vault }
+                                onChange={ (evt)=>this.obsidianOnChange( "vault", evt.target.value ) }
+                            />
+                            <TextField
+                                placeholder="保存目录，默认为 Clippings。"
+                                value={ ( this.state.secret.obsidian || {} ).folder }
+                                onChange={ (evt)=>this.obsidianOnChange( "folder", evt.target.value ) }
+                            />
+                            <TextField
+                                placeholder="标签，多个用 , 分割，默认为 clippings。"
+                                value={ ( this.state.secret.obsidian || {} ).tags }
+                                onChange={ (evt)=>this.obsidianOnChange( "tags", evt.target.value ) }
+                            />
+                        </div>
                         </div>
 
                     </div>;

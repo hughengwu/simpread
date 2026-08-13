@@ -123,6 +123,13 @@ class Read extends React.Component {
 
     componentWillMount() {
         $( "body" ).addClass( "simpread-hidden" );
+        // The read root is a child of <html>, so it scrolls with the host page's scrolling
+        // element. Hiding <body> does not undo a scroll lock the host page put on <html>,
+        // and pages that embed their article in a full-height iframe practically always
+        // set html,body{ height:100%; overflow:hidden } — the frame scrolls, the page does
+        // not. Without this the read view renders at full height and cannot be scrolled.
+        // @see simpread.css .simpread-scroll-unlock
+        $root.addClass( "simpread-scroll-unlock" );
         th.Change( this.props.read.theme );
         if ( storage.current.fap ) {
             $( "head" ).append( '<link rel="stylesheet" class="simpread-fs-style" href="//cdnjs.cloudflare.com/ajax/libs/font-awesome/5.11.2/css/solid.min.css" />' );
@@ -187,6 +194,7 @@ class Read extends React.Component {
         $root.attr("style") && $root.attr( "style", $root.attr("style").replace( "font-size: 62.5%!important", "" ));
         ss.SiteCSS();
         $( "body" ).removeClass( "simpread-hidden" );
+        $root.removeClass( "simpread-scroll-unlock" );
         $( rdclsjq ).remove();
         tooltip.Exit( rdclsjq );
     }

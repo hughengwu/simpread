@@ -17,6 +17,23 @@
 }
 
 /**
+ * Read: undo a scroll lock the host page put on the scrolling element.
+ *
+ * Set on <html> for the lifetime of read mode. !important because the lock is very often
+ * an inline style written by the site's own script, and height/max-height are reset too:
+ * a page that pins html to 100% would clip the read view instead of growing with it.
+ */
+html.simpread-scroll-unlock {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+
+    height: auto !important;
+    max-height: none !important;
+
+    position: static !important;
+}
+
+/**
  *  Read: background( root ) style
  */
  .simpread-read-root {
