@@ -162,6 +162,7 @@ class Read extends React.Component {
         $( "sr-rd-desc" ).text().trim() == "" && $( "sr-rd-desc" ).addClass( "simpread-hidden" );
 
         excludes( $("sr-rd-content"), this.props.wrapper.exclude );
+        dropComments( $("sr-rd-content")[0] );
         storage.pr.Beautify( $( "sr-rd-content" ) );
         storage.pr.Format( rdcls );
 
@@ -456,6 +457,36 @@ function excludes( $target, exclude ) {
     // the EvalError out of its own finally block. @see selector.js
     const tags = selector.Excludes( storage.pr, $target );
     $target.find( tags ).remove();
+}
+
+/**
+ * Drop every comment node from the rendered article.
+ *
+ * puread's cleanHTML() strips comments itself, with /<!--[\S ]+-->/gi. That character
+ * class excludes only line breaks and the quantifier is greedy, so on markup carrying no
+ * newlines the match runs from the first <!-- all the way to the last --> and deletes
+ * every paragraph in between. Nothing in the regex can stop it: the article is one line.
+ *
+ * Word exported HTML is exactly that shape, and it is what most government and corporate
+ * CMSes store when an editor pastes a .doc in. Word wraps each auto numbered heading in a
+ * downlevel revealed conditional — <![if !supportLists]> … <![endif]> — which the HTML
+ * parser turns into a pair of real comment nodes. One such document, the 个人住房贷款管理办法
+ * on nfra.gov.cn, carries 100 of them; read mode showed 283 of its 4125 characters, the
+ * head and tail that happen to fall outside the outermost comment pair.
+ *
+ * Removing the nodes here leaves that regex nothing to match, so cleanHTML runs unchanged
+ * and still gets the comment free HTML it was asking for. The content is always a string
+ * puread built ( ReadMode's include is html, never live page nodes ), so nothing the host
+ * page depends on is touched.
+ *
+ * @param {element} sr-rd-content
+ */
+function dropComments( root ) {
+    if ( !root ) return;
+    const walker = document.createTreeWalker( root, NodeFilter.SHOW_COMMENT, null, false ),
+          dead   = [];
+    while ( walker.nextNode() ) dead.push( walker.currentNode );
+    dead.forEach( node => node.parentNode && node.parentNode.removeChild( node ));
 }
 
 /**
