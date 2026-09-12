@@ -23,6 +23,22 @@
  * an inline style written by the site's own script, and height/max-height are reset too:
  * a page that pins html to 100% would clip the read view instead of growing with it.
  */
+/**
+ * The paragraph being read aloud. @see service/speech.js
+ *
+ * currentColor with a low alpha rather than a fixed colour: read mode ships a dozen
+ * themes, several of them dark, and a hard coded highlight is unreadable in half of them.
+ * box-shadow does the padding so that nothing reflows when the mark moves — a margin or
+ * a border would shift every following paragraph by a pixel on each utterance.
+ */
+sr-rd-content .simpread-speech-current,
+sr-rd-title.simpread-speech-current {
+    background-color: rgba(255, 213, 79, .28);
+    box-shadow: 0 0 0 4px rgba(255, 213, 79, .28);
+    border-radius: 2px;
+    transition: background-color .25s ease;
+}
+
 html.simpread-scroll-unlock {
     overflow-y: auto !important;
     overflow-x: hidden !important;

@@ -11,6 +11,7 @@ import * as WebDAV from 'webdav';
 import * as permission
                    from 'permission';
 import * as tips   from 'tips';
+import * as edgetts from 'edgetts';
 import PureRead    from 'puread';
 
 // global update site tab id
@@ -253,6 +254,24 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
 });
 
 /**
+ * Listen runtime message, include: `speak_synth`
+ *
+ * Its own listener rather than a case in the big switch below, because the answer is a
+ * round trip to Microsoft and `return true` has to be the last thing this listener does.
+ * @see service/edgetts.js
+ */
+browser.runtime.onMessage.addListener( function( request, sender, sendResponse ) {
+    if ( request.type != msg.MESSAGE_ACTION.speak_synth ) return;
+    edgetts.Synthesize( request.value )
+        .then ( result => sendResponse({ done: result }) )
+        .catch( error  => sendResponse({ fail: {
+            failed : ( error && error.failed ) || "dropped",
+            message: ( error && error.message ) || String( error ),
+        }}));
+    return true;
+});
+
+/**
  * Listen runtime message, include: `snapshot`
  */
 browser.runtime.onMessage.addListener( function( request, sender, sendResponse ) {
@@ -355,10 +374,29 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
             tracked( request.value );
             break;
         case msg.MESSAGE_ACTION.speak:
-            browser.tts.speak( request.value.content );
+            // The tab id has to be captured here: onEvent fires long after this handler
+            // has returned and `sender` is the only thing that knows where to answer.
+            // @see service/speech.js, which drives one utterance at a time.
+            const speaker = sender.tab ? sender.tab.id : -1;
+            browser.tts.speak( request.value.content, {
+                rate   : request.value.rate || 1,
+                enqueue: false,
+                onEvent: event => {
+                    speaker > 0 && [ "end", "interrupted", "cancelled", "error" ].includes( event.type ) &&
+                        sendToTab( speaker, msg.Add( msg.MESSAGE_ACTION.speak_end, {
+                            type: event.type, seq: request.value.seq
+                        }));
+                },
+            });
             break;
         case msg.MESSAGE_ACTION.speak_stop:
             browser.tts.stop();
+            break;
+        case msg.MESSAGE_ACTION.speak_pause:
+            browser.tts.pause();
+            break;
+        case msg.MESSAGE_ACTION.speak_resume:
+            browser.tts.resume();
             break;
         case msg.MESSAGE_ACTION.tips:
             tips.Verify( request.value.code, sendResponse );

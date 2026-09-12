@@ -12,6 +12,7 @@ import th           from 'theme';
 import * as ss      from 'stylesheet';
 import * as snap    from 'snapshot';
 import * as obsidian from 'obsidian';
+import * as speech  from 'speech';
 
 /**
  * Controlbar common action, include:
@@ -371,11 +372,10 @@ function action( type, title, desc, content ) {
         .done( result => service( result ));
 
     } else if ( type.startsWith( "dyslexia" ) ) {
-        if ( type.endsWith( "speak" ) ) {
-            browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.speak, { content: `标题 ${title} 正文 ${content}` } ));
-        } else {
-            browser.runtime.sendMessage( msg.Add( msg.MESSAGE_ACTION.speak_stop ));
-        }
+        // Both entries drive one player rather than a bare chrome.tts call: it reads the
+        // article a paragraph at a time, highlights the one being spoken, and prefers the
+        // edge-tts voices over the system ones. @see service/speech.js
+        type.endsWith( "stop" ) ? speech.Stop() : speech.Toggle();
     } else if ( type.startsWith( "fullscreen" ) ) {
         document.documentElement.requestFullscreen();
     } else if ( type.startsWith( "webdav_" ) ) {

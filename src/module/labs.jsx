@@ -9,6 +9,7 @@ import TextField from 'textfield';
 import Button    from 'button';
 
 import Auth      from 'authorize';
+import Speech    from 'speechopt';
 
 export default class LabsOpt extends React.Component {
 
@@ -332,6 +333,11 @@ export default class LabsOpt extends React.Component {
                     </div>
                     </div>
                 </div>
+                </div>
+
+                <div className="version-tips" data-hits="speech">
+                <div className="label" data-head-level="h1">语音朗读</div>
+                <Speech/>
                 </div>
 
                 <div className="version-tips" data-hits="auth">

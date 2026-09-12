@@ -168,7 +168,7 @@ const keyboard = {
         ts: {
             "kbd"  : "ts",
             "type" : "dyslexia_speak",
-            "desc" : "开始朗读",
+            "desc" : "朗读 / 暂停",
         },
         tt: {
             "kbd"  : "tt",
@@ -446,12 +446,12 @@ const readItems = {
         "color": "#90ee02",
         "items": {
             "dyslexia_speak" : {
-                "name" : "播放声音",
+                "name" : "朗读 / 暂停",
                 "icon" : ss.IconPath("speak_icon"),
                 "color": "#90ee02",
             },
             "dyslexia_speak_stop" : {
-                "name" : "停止播放",
+                "name" : "停止朗读",
                 "icon" : ss.IconPath("speak_stop_icon"),
                 "color": "#90ee02",
             },

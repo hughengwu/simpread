@@ -17,6 +17,7 @@ import * as msg           from 'message';
 import * as highlight     from 'highlight';
 import * as iframe        from 'iframe';
 import * as selector      from 'selector';
+import * as speech        from 'speech';
 import * as run           from 'runtime';
 import * as tips          from 'tips';
 
@@ -187,6 +188,10 @@ class Read extends React.Component {
     }
 
     componentWillUnmount() {
+        // before the DOM goes: the player holds references to the paragraphs it is
+        // reading, and an unattended AudioContext would keep talking over the page the
+        // reader just went back to. @see service/speech.js
+        speech.Stop();
         run.Event( "read_end" );
         loadPlugins( "read_end" );
         ss.FontSize( "" );
