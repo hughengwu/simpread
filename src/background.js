@@ -377,16 +377,20 @@ browser.runtime.onMessage.addListener( function( request, sender, sendResponse )
             // The tab id has to be captured here: onEvent fires long after this handler
             // has returned and `sender` is the only thing that knows where to answer.
             // @see service/speech.js, which drives one utterance at a time.
-            const speaker = sender.tab ? sender.tab.id : -1;
-            browser.tts.speak( request.value.content, {
-                rate   : request.value.rate || 1,
-                enqueue: false,
-                onEvent: event => {
-                    speaker > 0 && [ "end", "interrupted", "cancelled", "error" ].includes( event.type ) &&
-                        sendToTab( speaker, msg.Add( msg.MESSAGE_ACTION.speak_end, {
-                            type: event.type, seq: request.value.seq
-                        }));
-                },
+            const speaker = sender.tab ? sender.tab.id : -1,
+                  report  = ( type, reason ) => speaker > 0 && sendToTab( speaker,
+                                msg.Add( msg.MESSAGE_ACTION.speak_end, { type, reason, seq: request.value.seq } ));
+            browser.tts.getVoices( voices => {
+                // A machine with no speech engine installed is the nastiest case: speak()
+                // reports no error and then never fires an event, so the reader would sit
+                // on one highlighted paragraph forever. Ask first.
+                if ( !voices || voices.length == 0 ) return report( "error", "novoice" );
+                browser.tts.speak( request.value.content, {
+                    rate   : request.value.rate || 1,
+                    enqueue: false,
+                    onEvent: event => [ "end", "interrupted", "cancelled", "error" ].includes( event.type ) &&
+                                      report( event.type, event.errorMessage ),
+                }, () => { browser.runtime.lastError && report( "error", browser.runtime.lastError.message ); });
             });
             break;
         case msg.MESSAGE_ACTION.speak_stop:

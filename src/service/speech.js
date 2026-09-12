@@ -224,12 +224,14 @@ function listen() {
     listening = true;
     browser.runtime.onMessage.addListener( request => {
         if ( !request || request.type != msg.MESSAGE_ACTION.speak_end ) return;
-        const { seq, type } = request.value;
+        const { seq, type, reason } = request.value;
         if ( seq != session || engine != "local" ) return;
         // only a clean end advances: interrupted/cancelled means something stopped us,
         // and whoever did that decides what happens next
         type == "end"   && next( seq );
-        type == "error" && fail({ failed: "dropped", message: "系统语音引擎朗读失败。" });
+        type == "error" && fail({ failed: "dropped", message: reason == "novoice"
+            ? "系统没有可用的语音引擎，请在系统设置中安装语音包，或改用微软在线语音。"
+            : `系统语音引擎朗读失败。${ reason ? "（" + reason + "）" : "" }` });
     });
 }
 
