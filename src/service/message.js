@@ -27,6 +27,12 @@ const action = {
     // dyslexia
     speak          : "speak",
     speak_stop     : "speak_stop",
+    speak_pause    : "speak_pause",
+    speak_resume   : "speak_resume",
+    // one utterance ( chrome.tts ) finished in the worker, @see service/speech.js
+    speak_end      : "speak_end",
+    // synthesize one utterance through edge-tts, @see service/edgetts.js
+    speak_synth    : "speak_synth",
     // track
     track          : "track",
     // site

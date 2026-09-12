@@ -218,7 +218,7 @@ let current  = {},
         "service" : {},
     },
     secret   = {
-        version   : "2026-08-13",
+        version   : "2026-09-13",
         "dropbox" : {
             "access_token": ""
         },
@@ -277,6 +277,15 @@ let current  = {},
             vault   : "",
             folder  : "Clippings",
             tags    : "clippings",
+        },
+        // read aloud. Nothing secret here either, but Safe()'s version migration is what
+        // gets a new key onto an existing install without touching Verify(), which counts
+        // the keys of `option`/`read` and reports a mismatch as a broken profile.
+        // @see service/speech.js
+        "edgetts" : {
+            engine  : "edge",              // edge: 微软在线语音; local: 系统语音
+            voice   : "zh-CN-XiaoxiaoNeural",
+            rate    : "+0%",
         },
         "webdav"  : []
     };
