@@ -33,6 +33,9 @@ const action = {
     speak_end      : "speak_end",
     // synthesize one utterance through edge-tts, @see service/edgetts.js
     speak_synth    : "speak_synth",
+    // worker -> offscreen document; the string is repeated in offscreen/speech.js, which
+    // cannot import this module
+    speak_offscreen: "speak_offscreen",
     // track
     track          : "track",
     // site
